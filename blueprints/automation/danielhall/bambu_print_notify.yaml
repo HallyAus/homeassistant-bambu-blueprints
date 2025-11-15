@@ -79,7 +79,7 @@ blueprint:
 
     notify_service:
       name: Notify service
-      description: notify.mobile_app_your_phone
+      description: "Notification service (e.g. notify.mobile_app_your_phone)"
       selector:
         text: {}
 
