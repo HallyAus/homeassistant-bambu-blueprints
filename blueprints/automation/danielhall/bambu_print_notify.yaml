@@ -209,6 +209,7 @@ action:
   - service: button.press
     target:
       entity_id: "{{ refresh_button_entity }}"
+
   - delay: "00:00:03"
 
   - service: camera.snapshot
@@ -219,9 +220,8 @@ action:
 
   - delay: "00:00:02"
 
-  # 2. Branch: finished vs fault (with daytime critical)
+  # 2. Branch: finished vs fault
   - choose:
-
       # ===== FINISHED =====
       - conditions:
           - condition: state
@@ -244,7 +244,7 @@ action:
                     title: "Open printers view"
                     uri: "{{ printers_view_uri }}"
 
-      # ===== FAULT – CRITICAL BETWEEN critical_start AND critical_end =====
+      # ===== FAULT — WITHIN CRITICAL WINDOW =====
       - conditions:
           - condition: or
             conditions:
@@ -287,37 +287,36 @@ action:
                 Status: {{ status }}, progress {{ progress }}%.
               notification_id: "bambu_fault_{{ printer_name }}"
 
-  # ===== DEFAULT: FAULT OUTSIDE critical window (NON-CRITICAL) =====
-  default:
-    - condition: or
-      conditions:
-        - condition: state
-          entity_id: !input print_status_sensor
-          state: "failed"
-        - condition: state
-          entity_id: !input print_error_binary
-          state: "on"
+    default:
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: !input print_status_sensor
+            state: "failed"
+          - condition: state
+            entity_id: !input print_error_binary
+            state: "on"
 
-    - service: "{{ notify_service }}"
-      data:
-        title: "{{ printer_name }} FAULT"
-        message: >
-          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
-          Status: {{ status }}, progress {{ progress }}%.
+      - service: "{{ notify_service }}"
         data:
-          image: "{{ snapshot_url }}"
-          tag: "bambu_print_{{ printer_name }}"
-          sticky: true
-          persistent: true
-          actions:
-            - action: "OPEN_PRINTER_VIEW"
-              title: "Open printers view"
-              uri: "{{ printers_view_uri }}"
+          title: "{{ printer_name }} FAULT"
+          message: >
+            ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+            Status: {{ status }}, progress {{ progress }}%.
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            actions:
+              - action: "OPEN_PRINTER_VIEW"
+                title: "Open printers view"
+                uri: "{{ printers_view_uri }}"
 
-    - service: persistent_notification.create
-      data:
-        title: "{{ printer_name }} fault"
-        message: >
-          {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
-          Status: {{ status }}, progress {{ progress }}%.
-        notification_id: "bambu_fault_{{ printer_name }}"
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
