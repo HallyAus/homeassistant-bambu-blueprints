@@ -1,68 +1,19 @@
 blueprint:
-  name: Bambu printer – finish / fault notify with snapshot (improved)
+  name: Bambu printer – finish / fault notify with snapshot (simplified)
   description: >
     Sends a Home Assistant mobile notification with a camera snapshot when a
-    Bambu printer finishes or faults. Includes critical sound window, cooldown,
-    stage/progress guards, persistent notification, and a per-printer
-    enable switch. Improved with better error handling, consolidated logic,
-    and proper cooldown tracking.
+    Bambu printer finishes or faults. Auto-discovers sensors based on device prefix.
+    Just select your printer device and configure a few options!
   domain: automation
 
   input:
-    print_status_sensor:
-      name: Print status sensor
-      description: Sensor with states like running / finish / failed.
+    printer_device:
+      name: Bambu Printer Device
+      description: Select your Bambu printer device (sensors will be auto-discovered)
       selector:
-        entity:
-          domain: sensor
-
-    print_error_binary:
-      name: Print error binary sensor
-      description: Binary sensor that goes ON on print error.
-      selector:
-        entity:
-          domain: binary_sensor
-
-    current_stage_sensor:
-      name: Current stage sensor
-      description: Enum sensor for printer stage (printing, inspecting_first_layer, etc.).
-      selector:
-        entity:
-          domain: sensor
-
-    progress_sensor:
-      name: Progress sensor
-      description: Sensor for print progress (%).
-      selector:
-        entity:
-          domain: sensor
-
-    printer_name_sensor:
-      name: Printer name sensor
-      description: Sensor with the printer name (e.g. R2D7).
-      selector:
-        entity:
-          domain: sensor
-
-    task_name_sensor:
-      name: Task name sensor
-      description: Sensor with current task/job name.
-      selector:
-        entity:
-          domain: sensor
-
-    print_weight_sensor:
-      name: Print weight sensor
-      description: Sensor with print weight in grams.
-      selector:
-        entity:
-          domain: sensor
-
-    camera:
-      name: Printer camera
-      selector:
-        entity:
-          domain: camera
+        device:
+          integration: bambu_lab
+          multiple: false
 
     notifications_enabled_boolean:
       name: Notifications enabled boolean
@@ -139,14 +90,21 @@ blueprint:
 mode: single
 
 variables:
-  print_status_sensor: !input print_status_sensor
-  print_error_binary: !input print_error_binary
-  current_stage_sensor: !input current_stage_sensor
-  progress_sensor: !input progress_sensor
-  printer_name_sensor: !input printer_name_sensor
-  task_name_sensor: !input task_name_sensor
-  print_weight_sensor: !input print_weight_sensor
-  camera_entity: !input camera
+  printer_device: !input printer_device
+  
+  # Get all entities for this device
+  device_entities: "{{ device_entities(printer_device) }}"
+  
+  # Auto-discover sensor entities
+  print_status_sensor: "{{ device_entities | select('search', 'sensor.*_print_status$') | list | first }}"
+  print_error_binary: "{{ device_entities | select('search', 'binary_sensor.*_print_error$') | list | first }}"
+  current_stage_sensor: "{{ device_entities | select('search', 'sensor.*_current_stage$') | list | first }}"
+  progress_sensor: "{{ device_entities | select('search', 'sensor.*_print_progress$') | list | first }}"
+  printer_name_sensor: "{{ device_entities | select('search', 'sensor.*_printer_name$') | list | first }}"
+  task_name_sensor: "{{ device_entities | select('search', 'sensor.*_task_name$') | list | first }}"
+  print_weight_sensor: "{{ device_entities | select('search', 'sensor.*_print_weight$') | list | first }}"
+  camera_entity: "{{ device_entities | select('search', 'camera.*_camera$') | list | first }}"
+  
   notifications_enabled_boolean: !input notifications_enabled_boolean
   notify_device: !input notify_device
   critical_start: !input critical_start
@@ -155,8 +113,6 @@ variables:
   snapshot_delay_seconds: !input snapshot_delay_seconds
   progress_trigger_threshold: !input progress_trigger_threshold
   printers_view_uri: !input printers_view_uri
-  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
-  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
 
   printer_name: "{{ states(printer_name_sensor) }}"
   task_name: "{{ states(task_name_sensor) }}"
@@ -164,23 +120,26 @@ variables:
   status: "{{ states(print_status_sensor) }}"
   progress: "{{ states(progress_sensor) | int(0) }}"
   current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
 
 trigger:
   # Early snapshot trigger - fires when progress reaches threshold
   - platform: numeric_state
     id: progress_threshold
-    entity_id: !input progress_sensor
-    above: !input progress_trigger_threshold
+    entity_id: "{{ progress_sensor }}"
+    above: "{{ progress_trigger_threshold }}"
 
   - platform: state
     id: finish
-    entity_id: !input print_status_sensor
+    entity_id: "{{ print_status_sensor }}"
     from: "running"
     to: "finish"
 
   - platform: state
     id: failed_status
-    entity_id: !input print_status_sensor
+    entity_id: "{{ print_status_sensor }}"
     from:
       - "running"
       - "prepare"
@@ -188,7 +147,7 @@ trigger:
 
   - platform: state
     id: error_flag
-    entity_id: !input print_error_binary
+    entity_id: "{{ print_error_binary }}"
     from: "off"
     to: "on"
 
@@ -249,12 +208,12 @@ action:
     then:
       - wait_for_trigger:
           - platform: state
-            entity_id: !input print_status_sensor
+            entity_id: "{{ print_status_sensor }}"
             to:
               - "finish"
               - "failed"
           - platform: state
-            entity_id: !input print_error_binary
+            entity_id: "{{ print_error_binary }}"
             to: "on"
         timeout:
           minutes: 10
