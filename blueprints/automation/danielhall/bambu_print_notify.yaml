@@ -71,8 +71,6 @@ blueprint:
         entity:
           domain: input_boolean
 
-
-
     notify_device:
       name: Notify device/service
       description: "Device or service name (e.g. mobile_app_your_phone). Leave empty to disable notifications."
@@ -116,6 +114,24 @@ blueprint:
           unit_of_measurement: s
           mode: slider
 
+    progress_trigger_threshold:
+      name: Progress trigger threshold (%)
+      description: Trigger snapshot at this progress % (e.g., 99 to capture before bed drops). Leave at 0 to use state changes only.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    printers_view_uri:
+      name: Printers view URI (optional)
+      description: Lovelace path, e.g. /lovelace/3d_printers (leave blank to disable action button).
+      default: ""
+      selector:
+        text: {}
+
 mode: single
 
 variables:
@@ -128,14 +144,15 @@ variables:
   print_weight_sensor: !input print_weight_sensor
   camera_entity: !input camera
   notifications_enabled_boolean: !input notifications_enabled_boolean
-
   notify_device: !input notify_device
-  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
-  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
   critical_start: !input critical_start
   critical_end: !input critical_end
   cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
   printers_view_uri: !input printers_view_uri
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
 
   printer_name: "{{ states(printer_name_sensor) }}"
   task_name: "{{ states(task_name_sensor) }}"
@@ -145,6 +162,12 @@ variables:
   current_stage: "{{ states(current_stage_sensor) }}"
 
 trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: numeric_state
+    id: progress_threshold
+    entity_id: !input progress_sensor
+    above: !input progress_trigger_threshold
+
   - platform: state
     id: finish
     entity_id: !input print_status_sensor
@@ -203,13 +226,35 @@ condition:
          ] }}
 
 action:
-  # Take snapshot with error handling
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
   - service: camera.snapshot
     target:
       entity_id: "{{ camera_entity }}"
     data:
       filename: "{{ snapshot_file }}"
     continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_for_trigger:
+          - platform: state
+            entity_id: !input print_status_sensor
+            to:
+              - "finish"
+              - "failed"
+          - platform: state
+            entity_id: !input print_error_binary
+            to: "on"
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
 
   - delay: "00:00:02"
 
