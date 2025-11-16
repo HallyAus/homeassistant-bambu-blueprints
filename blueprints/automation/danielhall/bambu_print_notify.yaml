@@ -73,10 +73,14 @@ blueprint:
 
     notify_device:
       name: Notify device/service
-      description: "Device or service name (e.g. mobile_app_your_phone). Leave empty to disable notifications."
+      description: "Select notify service or leave empty to disable mobile notifications."
       default: ""
       selector:
-        text: {}
+        select:
+          options:
+            - label: "None (disable mobile notifications)"
+              value: ""
+          custom_value: true
 
     critical_start:
       name: Critical fault start time
