@@ -111,19 +111,1509 @@ mode: single
 
 variables:
   printer_device: !input printer_device
+  manual_status: !input print_status_sensor
+  manual_error: !input print_error_binary
+  manual_progress: !input progress_sensor
   
   # Get all entities for this device
   device_entities: "{{ device_entities(printer_device) }}"
   
-  # Auto-discover sensor entities
-  print_status_sensor: "{{ device_entities | select('search', 'sensor.*_print_status$') | list | first }}"
-  print_error_binary: "{{ device_entities | select('search', 'binary_sensor.*_print_error$') | list | first }}"
-  current_stage_sensor: "{{ device_entities | select('search', 'sensor.*_current_stage$') | list | first }}"
-  progress_sensor: "{{ device_entities | select('search', 'sensor.*_print_progress$') | list | first }}"
-  printer_name_sensor: "{{ device_entities | select('search', 'sensor.*_printer_name$') | list | first }}"
-  task_name_sensor: "{{ device_entities | select('search', 'sensor.*_task_name$') | list | first }}"
-  print_weight_sensor: "{{ device_entities | select('search', 'sensor.*_print_weight$') | list | first }}"
-  camera_entity: "{{ device_entities | select('search', 'camera.*_camera$') | list | first }}"
+  # Auto-discover sensor entities (with manual fallback)
+  print_status_sensor: >
+    {% if manual_status != '' %}
+      {{ manual_status }}
+    {% else %}
+      {{ device_entities | select('search', 'sensor.*_print_status
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # State-based triggers (work reliably)
+  - platform: state
+    entity_id: !input print_status_sensor
+    from: "running"
+    to: "finish"
+    id: finish
+
+  - platform: state
+    entity_id: !input print_status_sensor
+    from:
+      - "running"
+      - "prepare"
+    to: "failed"
+    id: failed_status
+
+  - platform: state
+    entity_id: !input print_error_binary
+    from: "off"
+    to: "on"
+    id: error_flag
+
+  - platform: numeric_state
+    entity_id: !input progress_sensor
+    above: !input progress_trigger_threshold
+    id: progress_threshold
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_for_trigger:
+          - platform: state
+            entity_id: !input print_status_sensor
+            to:
+              - "finish"
+              - "failed"
+          - platform: state
+            entity_id: !input print_error_binary
+            to: "on"
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}
+    {% endif %}
+  print_error_binary: >
+    {% if manual_error != '' %}
+      {{ manual_error }}
+    {% else %}
+      {{ device_entities | select('search', 'binary_sensor.*_print_error
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: template
+    id: progress_threshold
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
+
+  - platform: template
+    id: finish
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
+
+  - platform: template
+    id: failed_status
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
+
+  - platform: template
+    id: error_flag
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}
+    {% endif %}
+  progress_sensor: >
+    {% if manual_progress != '' %}
+      {{ manual_progress }}
+    {% else %}
+      {{ device_entities | select('search', 'sensor.*_print_progress
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: template
+    id: progress_threshold
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
+
+  - platform: template
+    id: finish
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
+
+  - platform: template
+    id: failed_status
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
+
+  - platform: template
+    id: error_flag
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}
+    {% endif %}
+  current_stage_sensor: "{{ device_entities | select('search', 'sensor.*_current_stage
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: template
+    id: progress_threshold
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
+
+  - platform: template
+    id: finish
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
+
+  - platform: template
+    id: failed_status
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
+
+  - platform: template
+    id: error_flag
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}"
+  printer_name_sensor: "{{ device_entities | select('search', 'sensor.*_printer_name
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: template
+    id: progress_threshold
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
+
+  - platform: template
+    id: finish
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
+
+  - platform: template
+    id: failed_status
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
+
+  - platform: template
+    id: error_flag
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}"
+  task_name_sensor: "{{ device_entities | select('search', 'sensor.*_task_name
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: template
+    id: progress_threshold
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
+
+  - platform: template
+    id: finish
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
+
+  - platform: template
+    id: failed_status
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
+
+  - platform: template
+    id: error_flag
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}"
+  print_weight_sensor: "{{ device_entities | select('search', 'sensor.*_print_weight
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: template
+    id: progress_threshold
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
+
+  - platform: template
+    id: finish
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
+
+  - platform: template
+    id: failed_status
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
+
+  - platform: template
+    id: error_flag
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}"
+  camera_entity: "{{ device_entities | select('search', 'camera.*_camera
+  
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  notify_device: !input notify_device
+  critical_start: !input critical_start
+  critical_end: !input critical_end
+  cooldown_minutes: !input cooldown_minutes
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  progress_trigger_threshold: !input progress_trigger_threshold
+  printers_view_uri: !input printers_view_uri
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  status: "{{ states(print_status_sensor) }}"
+  progress: "{{ states(progress_sensor) | int(0) }}"
+  current_stage: "{{ states(current_stage_sensor) }}"
+  
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+
+trigger:
+  # Early snapshot trigger - fires when progress reaches threshold
+  - platform: template
+    id: progress_threshold
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
+
+  - platform: template
+    id: finish
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
+
+  - platform: template
+    id: failed_status
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
+
+  - platform: template
+    id: error_flag
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
+
+condition:
+  # Check if notifications are enabled
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  # Check if essential sensors are available
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+  # Cooldown check using automation's last_triggered attribute
+  - condition: template
+    value_template: >
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
+
+action:
+  # Take snapshot with configurable delay (can be negative for earlier capture)
+  - delay:
+      seconds: "{{ snapshot_delay_seconds | int }}"
+    continue_on_error: true
+
+  - service: camera.snapshot
+    target:
+      entity_id: "{{ camera_entity }}"
+    data:
+      filename: "{{ snapshot_file }}"
+    continue_on_error: true
+
+  # Wait for actual finish/fault state if triggered by progress threshold
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
+    then:
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
+
+  - delay: "00:00:02"
+
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
+
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
+
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
+      - service: persistent_notification.create
+        data:
+          title: "{{ printer_name }} fault"
+          message: >
+            {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
+            Status: {{ status }}, progress {{ progress }}%.
+          notification_id: "bambu_fault_{{ printer_name }}"
+) | list | first }}"
   
   notifications_enabled_boolean: !input notifications_enabled_boolean
   notify_device: !input notify_device
