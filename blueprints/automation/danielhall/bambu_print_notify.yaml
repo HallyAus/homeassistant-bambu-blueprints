@@ -122,30 +122,34 @@ variables:
 
 trigger:
   # Early snapshot trigger - fires when progress reaches threshold
-  - platform: numeric_state
+  - platform: template
     id: progress_threshold
-    entity_id: "{{ progress_sensor }}"
-    above: "{{ progress_trigger_threshold }}"
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set progress_entity = entities | select('search', 'sensor.*_print_progress$') | list | first %}
+      {% set threshold = progress_trigger_threshold | int %}
+      {{ threshold > 0 and states(progress_entity) | int(0) >= threshold }}
 
-  - platform: state
+  - platform: template
     id: finish
-    entity_id: "{{ print_status_sensor }}"
-    from: "running"
-    to: "finish"
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'finish' }}
 
-  - platform: state
+  - platform: template
     id: failed_status
-    entity_id: "{{ print_status_sensor }}"
-    from:
-      - "running"
-      - "prepare"
-    to: "failed"
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+      {{ states(status_entity) == 'failed' }}
 
-  - platform: state
+  - platform: template
     id: error_flag
-    entity_id: "{{ print_error_binary }}"
-    from: "off"
-    to: "on"
+    value_template: >
+      {% set entities = device_entities(printer_device) %}
+      {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+      {{ is_state(error_entity, 'on') }}
 
 condition:
   # Check if notifications are enabled
@@ -202,15 +206,11 @@ action:
       - condition: template
         value_template: "{{ trigger.id == 'progress_threshold' }}"
     then:
-      - wait_for_trigger:
-          - platform: state
-            entity_id: "{{ print_status_sensor }}"
-            to:
-              - "finish"
-              - "failed"
-          - platform: state
-            entity_id: "{{ print_error_binary }}"
-            to: "on"
+      - wait_template: >
+          {% set entities = device_entities(printer_device) %}
+          {% set status_entity = entities | select('search', 'sensor.*_print_status$') | list | first %}
+          {% set error_entity = entities | select('search', 'binary_sensor.*_print_error$') | list | first %}
+          {{ is_state(status_entity, 'finish') or is_state(status_entity, 'failed') or is_state(error_entity, 'on') }}
         timeout:
           minutes: 10
         continue_on_timeout: false
