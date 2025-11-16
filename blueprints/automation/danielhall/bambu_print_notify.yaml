@@ -73,23 +73,10 @@ blueprint:
 
 
 
-    notify_service:
-      name: Notify service
-      description: "Notification service (e.g. notify.mobile_app_your_phone)"
-      selector:
-        text: {}
-
-    snapshot_file:
-      name: Snapshot file path
-      description: File path on HA host (under /config).
-      default: /config/www/snapshots/bambu_notify.jpg
-      selector:
-        text: {}
-
-    snapshot_url:
-      name: Snapshot URL
-      description: URL exposed by HA (www → /local).
-      default: /local/snapshots/bambu_notify.jpg
+    notify_device:
+      name: Notify device/service
+      description: "Device or service name (e.g. mobile_app_your_phone). Leave empty to disable notifications."
+      default: ""
       selector:
         text: {}
 
@@ -118,12 +105,16 @@ blueprint:
           unit_of_measurement: min
           mode: slider
 
-    printers_view_uri:
-      name: Printers view URI (optional)
-      description: Lovelace path, e.g. /lovelace/3d_printers (leave blank to disable action button).
-      default: ""
+    snapshot_delay_seconds:
+      name: Snapshot delay (seconds)
+      description: Delay before taking snapshot (negative = earlier, positive = later). Use -5 to -10 for finish photos before bed drops.
+      default: 0
       selector:
-        text: {}
+        number:
+          min: -30
+          max: 30
+          unit_of_measurement: s
+          mode: slider
 
 mode: single
 
@@ -138,9 +129,9 @@ variables:
   camera_entity: !input camera
   notifications_enabled_boolean: !input notifications_enabled_boolean
 
-  notify_service: !input notify_service
-  snapshot_file: !input snapshot_file
-  snapshot_url: !input snapshot_url
+  notify_device: !input notify_device
+  snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
+  snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
   critical_start: !input critical_start
   critical_end: !input critical_end
   cooldown_minutes: !input cooldown_minutes
@@ -251,26 +242,30 @@ action:
           Weight {{ print_weight }} g, {{ progress }}% reported.
         {% endif %}
 
-  # Send mobile notification
-  - service: "{{ notify_service }}"
-    data:
-      title: "{{ notification_title }}"
-      message: "{{ notification_message }}"
-      data:
-        image: "{{ snapshot_url }}"
-        tag: "bambu_print_{{ printer_name }}"
-        sticky: true
-        persistent: true
-        push: >
-          {% if is_critical_time %}
-          {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
-          {% endif %}
-        actions: >
-          {% if printers_view_uri != '' %}
-          [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
-          {% else %}
-          []
-          {% endif %}
+  # Send mobile notification (if device configured)
+  - if:
+      - condition: template
+        value_template: "{{ notify_device != '' }}"
+    then:
+      - service: "notify.{{ notify_device }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ notification_message }}"
+          data:
+            image: "{{ snapshot_url }}"
+            tag: "bambu_print_{{ printer_name }}"
+            sticky: true
+            persistent: true
+            push: >
+              {% if is_critical_time %}
+              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+              {% endif %}
+            actions: >
+              {% if printers_view_uri != '' %}
+              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+              {% else %}
+              []
+              {% endif %}
 
   # Create persistent notification for faults only
   - if:
