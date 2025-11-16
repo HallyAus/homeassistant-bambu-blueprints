@@ -1,10 +1,11 @@
 blueprint:
-  name: Bambu printer – finish / fault notify with snapshot
+  name: Bambu printer – finish / fault notify with snapshot (improved)
   description: >
     Sends a Home Assistant mobile notification with a camera snapshot when a
     Bambu printer finishes or faults. Includes critical sound window, cooldown,
     stage/progress guards, persistent notification, and a per-printer
-    enable switch.
+    enable switch. Improved with better error handling, consolidated logic,
+    and proper cooldown tracking.
   domain: automation
 
   input:
@@ -63,19 +64,19 @@ blueprint:
         entity:
           domain: camera
 
-    refresh_button:
-      name: Force refresh button
-      description: Bambu "Force refresh data" button.
-      selector:
-        entity:
-          domain: button
-
     notifications_enabled_boolean:
       name: Notifications enabled boolean
       description: input_boolean that must be ON to send notifications.
       selector:
         entity:
           domain: input_boolean
+
+    last_notification_helper:
+      name: Last notification timestamp helper
+      description: input_datetime to track last notification time (create one per printer).
+      selector:
+        entity:
+          domain: input_datetime
 
     notify_service:
       name: Notify service
@@ -124,7 +125,7 @@ blueprint:
 
     printers_view_uri:
       name: Printers view URI (optional)
-      description: Lovelace path, e.g. /lovelace/3d_printers (leave blank to ignore).
+      description: Lovelace path, e.g. /lovelace/3d_printers (leave blank to disable action button).
       default: ""
       selector:
         text: {}
@@ -140,8 +141,8 @@ variables:
   task_name_sensor: !input task_name_sensor
   print_weight_sensor: !input print_weight_sensor
   camera_entity: !input camera
-  refresh_button_entity: !input refresh_button
   notifications_enabled_boolean: !input notifications_enabled_boolean
+  last_notification_helper: !input last_notification_helper
   notify_service: !input notify_service
   snapshot_file: !input snapshot_file
   snapshot_url: !input snapshot_url
@@ -179,130 +180,108 @@ trigger:
     to: "on"
 
 condition:
+  # Check if notifications are enabled
   - condition: state
     entity_id: !input notifications_enabled_boolean
     state: "on"
 
+  # Check if essential sensors are available
   - condition: template
     value_template: >
-      {% set last = state_attr(this.entity_id, 'last_triggered') %}
-      {% set last_ts = as_timestamp(last) if last is not none else 0 %}
-      {% set diff = as_timestamp(now()) - last_ts %}
-      {{ diff > 60 * (cooldown_minutes | int) }}
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
 
+  # Cooldown check using helper entity
   - condition: template
     value_template: >
-      {{ progress > 0 and current_stage in [
-          'printing',
-          'inspecting_first_layer',
-          'auto_bed_leveling'
-      ] }}
+      {% set last = states(last_notification_helper) %}
+      {% if last in ['unavailable', 'unknown', ''] %}
+        true
+      {% else %}
+        {% set last_ts = as_timestamp(last) %}
+        {% set diff = as_timestamp(now()) - last_ts %}
+        {{ diff > 60 * (cooldown_minutes | int) }}
+      {% endif %}
+
+  # Stage and progress guard (less restrictive to catch more fault scenarios)
+  - condition: template
+    value_template: >
+      {{ progress > 0 or 
+         current_stage in [
+           'printing',
+           'inspecting_first_layer',
+           'auto_bed_leveling',
+           'paused'
+         ] }}
 
 action:
-  - service: button.press
-    target:
-      entity_id: "{{ refresh_button_entity }}"
-
-  - delay: "00:00:03"
-
+  # Take snapshot with error handling
   - service: camera.snapshot
     target:
       entity_id: "{{ camera_entity }}"
     data:
       filename: "{{ snapshot_file }}"
+    continue_on_error: true
 
   - delay: "00:00:02"
 
-  - choose:
-      - conditions:
-          - condition: state
-            entity_id: !input print_status_sensor
-            state: "finish"
-        sequence:
-          - service: "{{ notify_service }}"
-            data:
-              title: "{{ printer_name }} print finished"
-              message: >
-                ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
-                Weight {{ print_weight }} g, {{ progress }}% reported.
-              data:
-                image: "{{ snapshot_url }}"
-                tag: "bambu_print_{{ printer_name }}"
-                sticky: true
-                persistent: true
-                actions:
-                  - action: "OPEN_PRINTER_VIEW"
-                    title: "Open printers view"
-                    uri: "{{ printers_view_uri }}"
+  # Calculate notification properties
+  - variables:
+      is_fault: >
+        {{ is_state(print_status_sensor, 'failed') or 
+           is_state(print_error_binary, 'on') }}
+      is_critical_time: >
+        {% if not is_fault %}
+          false
+        {% else %}
+          {% set now_time = now().time() %}
+          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
+          {{ now_time >= start and now_time <= end }}
+        {% endif %}
+      notification_title: >
+        {% if is_fault %}
+          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+        {% else %}
+          {{ printer_name }} print finished
+        {% endif %}
+      notification_message: >
+        {% if is_fault %}
+          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
+          Status: {{ status }}, progress {{ progress }}%.
+        {% else %}
+          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
+          Weight {{ print_weight }} g, {{ progress }}% reported.
+        {% endif %}
 
-      - conditions:
-          - condition: or
-            conditions:
-              - condition: state
-                entity_id: !input print_status_sensor
-                state: "failed"
-              - condition: state
-                entity_id: !input print_error_binary
-                state: "on"
-          - condition: time
-            after: !input critical_start
-            before: !input critical_end
-        sequence:
-          - service: "{{ notify_service }}"
-            data:
-              title: "{{ printer_name }} FAULT (CRITICAL)"
-              message: >
-                ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
-                Status: {{ status }}, progress {{ progress }}%.
-              data:
-                image: "{{ snapshot_url }}"
-                tag: "bambu_print_{{ printer_name }}"
-                sticky: true
-                persistent: true
-                push:
-                  sound:
-                    name: default
-                    critical: 1
-                    volume: 1.0
-                actions:
-                  - action: "OPEN_PRINTER_VIEW"
-                    title: "Open printers view"
-                    uri: "{{ printers_view_uri }}"
+  # Send mobile notification
+  - service: "{{ notify_service }}"
+    data:
+      title: "{{ notification_title }}"
+      message: "{{ notification_message }}"
+      data:
+        image: "{{ snapshot_url }}"
+        tag: "bambu_print_{{ printer_name }}"
+        sticky: true
+        persistent: true
+        push: >
+          {% if is_critical_time %}
+          {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+          {% endif %}
+        actions: >
+          {% if printers_view_uri != '' %}
+          [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+          {% else %}
+          []
+          {% endif %}
 
-          - service: persistent_notification.create
-            data:
-              title: "{{ printer_name }} fault"
-              message: >
-                {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
-                Status: {{ status }}, progress {{ progress }}%.
-              notification_id: "bambu_fault_{{ printer_name }}"
-
-    default:
-      - condition: or
-        conditions:
-          - condition: state
-            entity_id: !input print_status_sensor
-            state: "failed"
-          - condition: state
-            entity_id: !input print_error_binary
-            state: "on"
-
-      - service: "{{ notify_service }}"
-        data:
-          title: "{{ printer_name }} FAULT"
-          message: >
-            ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
-            Status: {{ status }}, progress {{ progress }}%.
-          data:
-            image: "{{ snapshot_url }}"
-            tag: "bambu_print_{{ printer_name }}"
-            sticky: true
-            persistent: true
-            actions:
-              - action: "OPEN_PRINTER_VIEW"
-                title: "Open printers view"
-                uri: "{{ printers_view_uri }}"
-
+  # Create persistent notification for faults only
+  - if:
+      - condition: template
+        value_template: "{{ is_fault }}"
+    then:
       - service: persistent_notification.create
         data:
           title: "{{ printer_name }} fault"
@@ -310,3 +289,10 @@ action:
             {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
             Status: {{ status }}, progress {{ progress }}%.
           notification_id: "bambu_fault_{{ printer_name }}"
+
+  # Update cooldown timestamp
+  - service: input_datetime.set_datetime
+    target:
+      entity_id: "{{ last_notification_helper }}"
+    data:
+      timestamp: "{{ now().timestamp() }}"
