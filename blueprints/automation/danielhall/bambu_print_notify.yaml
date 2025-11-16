@@ -15,6 +15,30 @@ blueprint:
           integration: bambu_lab
           multiple: false
 
+    print_status_sensor:
+      name: Print Status Sensor (manual fallback)
+      description: Only needed if auto-discovery fails. Select the print_status sensor.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    print_error_binary:
+      name: Print Error Binary (manual fallback)
+      description: Only needed if auto-discovery fails. Select the print_error binary sensor.
+      default: ""
+      selector:
+        entity:
+          domain: binary_sensor
+
+    progress_sensor:
+      name: Progress Sensor (manual fallback)
+      description: Only needed if auto-discovery fails. Select the print_progress sensor.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
     notifications_enabled_boolean:
       name: Notifications enabled boolean
       description: input_boolean that must be ON to send notifications.
