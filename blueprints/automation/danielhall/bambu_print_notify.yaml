@@ -71,12 +71,7 @@ blueprint:
         entity:
           domain: input_boolean
 
-    last_notification_helper:
-      name: Last notification timestamp helper
-      description: input_datetime to track last notification time (create one per printer).
-      selector:
-        entity:
-          domain: input_datetime
+
 
     notify_service:
       name: Notify service
@@ -142,7 +137,7 @@ variables:
   print_weight_sensor: !input print_weight_sensor
   camera_entity: !input camera
   notifications_enabled_boolean: !input notifications_enabled_boolean
-  last_notification_helper: !input last_notification_helper
+
   notify_service: !input notify_service
   snapshot_file: !input snapshot_file
   snapshot_url: !input snapshot_url
@@ -193,11 +188,11 @@ condition:
          not is_state(print_status_sensor, 'unavailable') and
          not is_state(print_status_sensor, 'unknown') }}
 
-  # Cooldown check using helper entity
+  # Cooldown check using automation's last_triggered attribute
   - condition: template
     value_template: >
-      {% set last = states(last_notification_helper) %}
-      {% if last in ['unavailable', 'unknown', ''] %}
+      {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
+      {% if last == none %}
         true
       {% else %}
         {% set last_ts = as_timestamp(last) %}
@@ -289,10 +284,3 @@ action:
             {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
             Status: {{ status }}, progress {{ progress }}%.
           notification_id: "bambu_fault_{{ printer_name }}"
-
-  # Update cooldown timestamp
-  - service: input_datetime.set_datetime
-    target:
-      entity_id: "{{ last_notification_helper }}"
-    data:
-      timestamp: "{{ now().timestamp() }}"
