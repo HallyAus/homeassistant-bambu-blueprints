@@ -1,40 +1,67 @@
 blueprint:
-  name: Bambu printer – finish / fault notify with snapshot (simplified)
+  name: Bambu printer – finish / fault notify with snapshot (improved)
   description: >
     Sends a Home Assistant mobile notification with a camera snapshot when a
-    Bambu printer finishes or faults. Auto-discovers sensors based on device prefix.
-    Just select your printer device and configure a few options!
+    Bambu printer finishes or faults. Includes critical sound window, cooldown,
+    stage/progress guards, persistent notification, and a per-printer
+    enable switch. Improved with consolidated logic and better error handling.
   domain: automation
 
   input:
-    printer_device:
-      name: Bambu Printer Device
-      description: Select your Bambu printer device (sensors will be auto-discovered)
-      selector:
-        device:
-          integration: bambu_lab
-          multiple: false
-
     print_status_sensor:
-      name: Print Status Sensor
-      description: Select the print_status sensor for this printer.
+      name: Print status sensor
+      description: Sensor with states like running / finish / failed.
       selector:
         entity:
           domain: sensor
 
     print_error_binary:
-      name: Print Error Binary
-      description: Select the print_error binary sensor for this printer.
+      name: Print error binary sensor
+      description: Binary sensor that goes ON on print error.
       selector:
         entity:
           domain: binary_sensor
 
-    progress_sensor:
-      name: Progress Sensor
-      description: Select the print_progress sensor for this printer.
+    current_stage_sensor:
+      name: Current stage sensor
+      description: Enum sensor for printer stage (printing, inspecting_first_layer, etc.).
       selector:
         entity:
           domain: sensor
+
+    progress_sensor:
+      name: Progress sensor
+      description: Sensor for print progress (%).
+      selector:
+        entity:
+          domain: sensor
+
+    printer_name_sensor:
+      name: Printer name sensor
+      description: Sensor with the printer name (e.g. R2D7).
+      selector:
+        entity:
+          domain: sensor
+
+    task_name_sensor:
+      name: Task name sensor
+      description: Sensor with current task/job name.
+      selector:
+        entity:
+          domain: sensor
+
+    print_weight_sensor:
+      name: Print weight sensor
+      description: Sensor with print weight in grams.
+      selector:
+        entity:
+          domain: sensor
+
+    camera:
+      name: Printer camera
+      selector:
+        entity:
+          domain: camera
 
     notifications_enabled_boolean:
       name: Notifications enabled boolean
@@ -107,10 +134,14 @@ blueprint:
 mode: single
 
 variables:
-  printer_device: !input printer_device
   print_status_sensor: !input print_status_sensor
   print_error_binary: !input print_error_binary
+  current_stage_sensor: !input current_stage_sensor
   progress_sensor: !input progress_sensor
+  printer_name_sensor: !input printer_name_sensor
+  task_name_sensor: !input task_name_sensor
+  print_weight_sensor: !input print_weight_sensor
+  camera_entity: !input camera
   notifications_enabled_boolean: !input notifications_enabled_boolean
   notify_device: !input notify_device
   critical_start: !input critical_start
@@ -119,13 +150,6 @@ variables:
   snapshot_delay_seconds: !input snapshot_delay_seconds
   progress_trigger_threshold: !input progress_trigger_threshold
   printers_view_uri: !input printers_view_uri
-  
-  device_entities: "{{ device_entities(printer_device) }}"
-  current_stage_sensor: "{{ device_entities | select('search', 'sensor.*_current_stage$') | list | first }}"
-  printer_name_sensor: "{{ device_entities | select('search', 'sensor.*_printer_name$') | list | first }}"
-  task_name_sensor: "{{ device_entities | select('search', 'sensor.*_task_name$') | list | first }}"
-  print_weight_sensor: "{{ device_entities | select('search', 'sensor.*_print_weight$') | list | first }}"
-  camera_entity: "{{ device_entities | select('search', 'camera.*_camera$') | list | first }}"
 
   printer_name: "{{ states(printer_name_sensor) }}"
   task_name: "{{ states(task_name_sensor) }}"
@@ -138,30 +162,30 @@ variables:
   snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
 
 trigger:
+  - platform: numeric_state
+    id: progress_threshold
+    entity_id: !input progress_sensor
+    above: !input progress_trigger_threshold
+
   - platform: state
+    id: finish
     entity_id: !input print_status_sensor
     from: "running"
     to: "finish"
-    id: finish
 
   - platform: state
+    id: failed_status
     entity_id: !input print_status_sensor
     from:
       - "running"
       - "prepare"
     to: "failed"
-    id: failed_status
 
   - platform: state
+    id: error_flag
     entity_id: !input print_error_binary
     from: "off"
     to: "on"
-    id: error_flag
-
-  - platform: numeric_state
-    entity_id: !input progress_sensor
-    above: !input progress_trigger_threshold
-    id: progress_threshold
 
 condition:
   - condition: state
@@ -197,6 +221,7 @@ condition:
          ] }}
 
 action:
+  # Take snapshot with configurable delay
   - delay:
       seconds: "{{ snapshot_delay_seconds | int }}"
     continue_on_error: true
@@ -208,6 +233,7 @@ action:
       filename: "{{ snapshot_file }}"
     continue_on_error: true
 
+  # Wait for actual finish/fault state if triggered by progress threshold
   - if:
       - condition: template
         value_template: "{{ trigger.id == 'progress_threshold' }}"
@@ -227,6 +253,7 @@ action:
 
   - delay: "00:00:02"
 
+  # Calculate notification properties
   - variables:
       is_fault: >
         {{ is_state(print_status_sensor, 'failed') or 
@@ -255,6 +282,7 @@ action:
           Weight {{ print_weight }} g, {{ progress }}% reported.
         {% endif %}
 
+  # Send mobile notification (if device configured)
   - if:
       - condition: template
         value_template: "{{ notify_device != '' }}"
@@ -279,6 +307,7 @@ action:
               []
               {% endif %}
 
+  # Create persistent notification for faults only
   - if:
       - condition: template
         value_template: "{{ is_fault }}"
