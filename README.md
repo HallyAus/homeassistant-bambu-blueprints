@@ -39,7 +39,7 @@ This blueprint sends mobile notifications when a print **finishes** or
    - Raw URL (example):
 
      ```
-     https://raw.githubusercontent.com/<your_username>/homeassistant-bambu-blueprints/main/blueprints/automation/danielhall/bambu_print_notify.yaml
+     https://raw.githubusercontent.com/hallyaus/homeassistant-bambu-blueprints/main/blueprints/automation/danielhall/bambu_print_notify.yaml
      ```
 
 2. In Home Assistant, go to:
