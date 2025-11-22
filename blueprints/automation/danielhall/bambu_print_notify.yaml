@@ -80,14 +80,12 @@ blueprint:
     success_notification_type:
       name: Success notification type
       description: Notification priority for successful prints.
-      default: "normal"
+      default: normal
       selector:
         select:
           options:
-            - label: "Normal (regular notification)"
-              value: "normal"
-            - label: "Critical (bypass Do Not Disturb)"
-              value: "critical"
+            - normal
+            - critical
 
     success_critical_start:
       name: Success critical start time
@@ -106,14 +104,12 @@ blueprint:
     fault_notification_type:
       name: Fault notification type
       description: Notification priority for failed prints.
-      default: "critical"
+      default: critical
       selector:
         select:
           options:
-            - label: "Normal (regular notification)"
-              value: "normal"
-            - label: "Critical (bypass Do Not Disturb)"
-              value: "critical"
+            - normal
+            - critical
 
     fault_critical_start:
       name: Fault critical start time
