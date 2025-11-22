@@ -120,24 +120,13 @@ blueprint:
           unit_of_measurement: min
           mode: slider
 
-    snapshot_delay_seconds:
-      name: Snapshot delay (seconds)
-      description: Delay before taking snapshot (negative = earlier, positive = later). Use -5 to -10 for finish photos before bed drops.
-      default: 0
-      selector:
-        number:
-          min: -30
-          max: 30
-          unit_of_measurement: s
-          mode: slider
-
     progress_trigger_threshold:
       name: Progress trigger threshold (%)
-      description: Trigger snapshot at this progress % (e.g., 99 to capture before bed drops). Leave at 0 to use state changes only.
-      default: 0
+      description: Trigger snapshot at this progress % (recommended 98-99 to capture before bed drops).
+      default: 99
       selector:
         number:
-          min: 0
+          min: 95
           max: 100
           unit_of_measurement: "%"
           mode: slider
@@ -168,7 +157,6 @@ variables:
   critical_sound: !input critical_sound
   critical_volume: !input critical_volume
   cooldown_minutes: !input cooldown_minutes
-  snapshot_delay_seconds: !input snapshot_delay_seconds
   progress_trigger_threshold: !input progress_trigger_threshold
   printers_view_uri: !input printers_view_uri
 
@@ -195,26 +183,6 @@ trigger:
     id: progress_threshold
     entity_id: !input progress_sensor
     above: !input progress_trigger_threshold
-
-  - platform: state
-    id: finish
-    entity_id: !input print_status_sensor
-    from: "running"
-    to: "finish"
-
-  - platform: state
-    id: failed_status
-    entity_id: !input print_status_sensor
-    from:
-      - "running"
-      - "prepare"
-    to: "failed"
-
-  - platform: state
-    id: error_flag
-    entity_id: !input print_error_binary
-    from: "off"
-    to: "on"
 
 condition:
   - condition: state
@@ -253,15 +221,11 @@ action:
   # Skip if triggered by startup/reload and printer not in completion state
   - if:
       - condition: template
-        value_template: "{{ trigger.id in ['startup', 'reload'] and status not in ['finish', 'failed'] }}"
+        value_template: "{{ trigger.id in ['startup', 'reload'] }}"
     then:
-      - stop: "Automation reloaded mid-print, waiting for actual completion"
+      - stop: "Automation reloaded, will trigger at next print completion"
 
-  # Take snapshot with configurable delay
-  - delay:
-      seconds: "{{ snapshot_delay_seconds | int }}"
-    continue_on_error: true
-
+  # Take snapshot immediately (at 99%, bed still up!)
   - service: camera.snapshot
     target:
       entity_id: "{{ camera_entity }}"
@@ -269,23 +233,19 @@ action:
       filename: "{{ snapshot_file }}"
     continue_on_error: true
 
-  # Wait for actual finish/fault state if triggered by progress threshold
-  - if:
-      - condition: template
-        value_template: "{{ trigger.id == 'progress_threshold' }}"
-    then:
-      - wait_for_trigger:
-          - platform: state
-            entity_id: !input print_status_sensor
-            to:
-              - "finish"
-              - "failed"
-          - platform: state
-            entity_id: !input print_error_binary
-            to: "on"
-        timeout:
-          minutes: 10
-        continue_on_timeout: false
+  # Wait for actual finish/fault state (max 10 minutes)
+  - wait_for_trigger:
+      - platform: state
+        entity_id: !input print_status_sensor
+        to:
+          - "finish"
+          - "failed"
+      - platform: state
+        entity_id: !input print_error_binary
+        to: "on"
+    timeout:
+      minutes: 10
+    continue_on_timeout: false
 
   - delay: "00:00:02"
 
