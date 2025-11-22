@@ -79,17 +79,35 @@ blueprint:
 
     critical_start:
       name: Critical fault start time
-      description: Time from which fault notifications become critical.
+      description: Time from which fault notifications become critical (only for FAULTS).
       default: "07:00:00"
       selector:
         time: {}
 
     critical_end:
       name: Critical fault end time
-      description: Time after which faults are no longer critical.
+      description: Time after which faults are no longer critical (only for FAULTS).
       default: "21:00:00"
       selector:
         time: {}
+
+    critical_sound:
+      name: Critical alert sound
+      description: Sound name for critical fault alerts (iOS). Common options - default, alert, bell, chime, glass, horn, etc.
+      default: "default"
+      selector:
+        text:
+
+    critical_volume:
+      name: Critical alert volume
+      description: Volume for critical fault alerts (0.0 to 1.0).
+      default: 1.0
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.1
+          mode: slider
 
     cooldown_minutes:
       name: Cooldown between alerts (minutes)
@@ -147,6 +165,8 @@ variables:
   notify_device: !input notify_device
   critical_start: !input critical_start
   critical_end: !input critical_end
+  critical_sound: !input critical_sound
+  critical_volume: !input critical_volume
   cooldown_minutes: !input cooldown_minutes
   snapshot_delay_seconds: !input snapshot_delay_seconds
   progress_trigger_threshold: !input progress_trigger_threshold
@@ -303,25 +323,52 @@ action:
       - condition: template
         value_template: "{{ notify_device != '' }}"
     then:
-      - service: "notify.{{ notify_device }}"
-        data:
-          title: "{{ notification_title }}"
-          message: "{{ notification_message }}"
-          data:
-            image: "{{ snapshot_url }}"
-            tag: "bambu_print_{{ printer_name }}"
-            sticky: true
-            persistent: true
-            push: >
-              {% if is_critical_time %}
-              {{ {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
-              {% endif %}
-            actions: >
-              {% if printers_view_uri != '' %}
-              [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
-              {% else %}
-              []
-              {% endif %}
+      - choose:
+          # SUCCESS NOTIFICATION - Normal priority
+          - conditions:
+              - condition: template
+                value_template: "{{ not is_fault }}"
+            sequence:
+              - service: "notify.{{ notify_device }}"
+                data:
+                  title: "{{ notification_title }}"
+                  message: "{{ notification_message }}"
+                  data:
+                    image: "{{ snapshot_url }}"
+                    tag: "bambu_print_{{ printer_name }}"
+                    sticky: false
+                    persistent: false
+                    actions: >
+                      {% if printers_view_uri != '' %}
+                      [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+                      {% else %}
+                      []
+                      {% endif %}
+
+          # FAULT NOTIFICATION - Critical if within time window
+          - conditions:
+              - condition: template
+                value_template: "{{ is_fault }}"
+            sequence:
+              - service: "notify.{{ notify_device }}"
+                data:
+                  title: "{{ notification_title }}"
+                  message: "{{ notification_message }}"
+                  data:
+                    image: "{{ snapshot_url }}"
+                    tag: "bambu_print_{{ printer_name }}"
+                    sticky: true
+                    persistent: true
+                    push: >
+                      {% if is_critical_time %}
+                      {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
+                      {% endif %}
+                    actions: >
+                      {% if printers_view_uri != '' %}
+                      [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+                      {% else %}
+                      []
+                      {% endif %}
 
   # Create persistent notification for faults only
   - if:
