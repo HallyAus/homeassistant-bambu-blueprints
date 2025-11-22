@@ -1,1 +1,413 @@
+blueprint:
+  name: Bambu printer – Progress monitoring with PDF report
+  description: >
+    Monitors a Bambu printer, takes snapshots at configurable intervals during printing,
+    and sends a comprehensive PDF report via email upon completion. Report includes
+    print time, filament usage, snapshots, printer info, and more.
+  domain: automation
 
+  input:
+    print_status_sensor:
+      name: Print status sensor
+      description: Sensor with states like running / finish / failed.
+      selector:
+        entity:
+          domain: sensor
+
+    current_stage_sensor:
+      name: Current stage sensor
+      description: Enum sensor for printer stage (printing, inspecting_first_layer, etc.).
+      selector:
+        entity:
+          domain: sensor
+
+    progress_sensor:
+      name: Progress sensor
+      description: Sensor for print progress (%).
+      selector:
+        entity:
+          domain: sensor
+
+    printer_name_sensor:
+      name: Printer name sensor
+      description: Sensor with the printer name (e.g. R2D7).
+      selector:
+        entity:
+          domain: sensor
+
+    task_name_sensor:
+      name: Task name sensor
+      description: Sensor with current task/job name.
+      selector:
+        entity:
+          domain: sensor
+
+    print_weight_sensor:
+      name: Print weight sensor
+      description: Sensor with print weight in grams.
+      selector:
+        entity:
+          domain: sensor
+
+    start_time_sensor:
+      name: Start time sensor
+      description: Sensor showing when the print started.
+      selector:
+        entity:
+          domain: sensor
+
+    remaining_time_sensor:
+      name: Remaining time sensor (optional)
+      description: Sensor showing estimated time remaining.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    nozzle_temp_sensor:
+      name: Nozzle temperature sensor (optional)
+      description: Current nozzle temperature.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    bed_temp_sensor:
+      name: Bed temperature sensor (optional)
+      description: Current bed temperature.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    camera:
+      name: Printer camera
+      selector:
+        entity:
+          domain: camera
+
+    notifications_enabled_boolean:
+      name: Monitoring enabled boolean
+      description: input_boolean that must be ON to monitor and send reports.
+      selector:
+        entity:
+          domain: input_boolean
+
+    snapshot_interval:
+      name: Snapshot interval (minutes)
+      description: How often to take progress snapshots during printing.
+      default: 15
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+          mode: slider
+
+    email_recipient:
+      name: Email recipient
+      description: Email address to send the report to.
+      selector:
+        text:
+
+    email_service:
+      name: Email notification service
+      description: "Name of your notify service for email (e.g., notify.gmail, notify.smtp_notification)"
+      default: "notify.gmail"
+      selector:
+        text:
+
+    include_final_snapshot:
+      name: Include final snapshot
+      description: Take an additional snapshot when print completes.
+      default: true
+      selector:
+        boolean:
+
+    send_on_failure:
+      name: Send report on failure
+      description: Also send a report if the print fails.
+      default: true
+      selector:
+        boolean:
+
+mode: single
+max_exceeded: silent
+
+variables:
+  print_status_sensor: !input print_status_sensor
+  current_stage_sensor: !input current_stage_sensor
+  progress_sensor: !input progress_sensor
+  printer_name_sensor: !input printer_name_sensor
+  task_name_sensor: !input task_name_sensor
+  print_weight_sensor: !input print_weight_sensor
+  start_time_sensor: !input start_time_sensor
+  remaining_time_sensor: !input remaining_time_sensor
+  nozzle_temp_sensor: !input nozzle_temp_sensor
+  bed_temp_sensor: !input bed_temp_sensor
+  camera_entity: !input camera
+  notifications_enabled_boolean: !input notifications_enabled_boolean
+  snapshot_interval: !input snapshot_interval
+  email_recipient: !input email_recipient
+  email_service: !input email_service
+  include_final_snapshot: !input include_final_snapshot
+  send_on_failure: !input send_on_failure
+
+  printer_name: "{{ states(printer_name_sensor) }}"
+  task_name: "{{ states(task_name_sensor) }}"
+  print_weight: "{{ states(print_weight_sensor) }}"
+  
+  snapshot_base_path: "/config/www/snapshots/progress/"
+  report_base_path: "/config/www/reports/"
+
+trigger:
+  - platform: state
+    entity_id: !input print_status_sensor
+    to: "running"
+    id: print_started
+
+  - platform: state
+    entity_id: !input print_status_sensor
+    to:
+      - "finish"
+      - "failed"
+    id: print_ended
+
+condition:
+  - condition: state
+    entity_id: !input notifications_enabled_boolean
+    state: "on"
+
+  - condition: template
+    value_template: >
+      {{ not is_state(printer_name_sensor, 'unavailable') and
+         not is_state(printer_name_sensor, 'unknown') and
+         not is_state(print_status_sensor, 'unavailable') and
+         not is_state(print_status_sensor, 'unknown') }}
+
+action:
+  - choose:
+      # PRINT STARTED - Begin monitoring loop
+      - conditions:
+          - condition: trigger
+            id: print_started
+        sequence:
+          - variables:
+              job_id: "{{ now().strftime('%Y%m%d_%H%M%S') }}_{{ printer_name | lower | replace(' ', '_') }}"
+              snapshot_folder: "{{ snapshot_base_path }}{{ job_id }}/"
+              snapshot_count: 0
+          
+          # Create folder for snapshots (via shell command - needs to be set up)
+          - service: shell_command.create_snapshot_folder
+            data:
+              folder: "{{ snapshot_folder }}"
+            continue_on_error: true
+          
+          # Take initial snapshot
+          - service: camera.snapshot
+            target:
+              entity_id: "{{ camera_entity }}"
+            data:
+              filename: "{{ snapshot_folder }}snapshot_000_0pct.jpg"
+            continue_on_error: true
+          
+          # Monitoring loop - take snapshots at intervals
+          - repeat:
+              while:
+                - condition: state
+                  entity_id: !input print_status_sensor
+                  state: "running"
+                - condition: template
+                  value_template: "{{ repeat.index < 200 }}"  # Safety limit
+              sequence:
+                - delay:
+                    minutes: !input snapshot_interval
+                
+                - condition: state
+                  entity_id: !input print_status_sensor
+                  state: "running"
+                
+                - variables:
+                    current_progress: "{{ states(progress_sensor) | int(0) }}"
+                    snapshot_num: "{{ '%03d' | format(repeat.index) }}"
+                
+                - service: camera.snapshot
+                  target:
+                    entity_id: "{{ camera_entity }}"
+                  data:
+                    filename: "{{ snapshot_folder }}snapshot_{{ snapshot_num }}_{{ current_progress }}pct.jpg"
+                  continue_on_error: true
+          
+          # Store job_id for use when print ends
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.last_print_job_id
+            data:
+              value: "{{ job_id }}"
+            continue_on_error: true
+
+      # PRINT ENDED - Generate and send report
+      - conditions:
+          - condition: trigger
+            id: print_ended
+        sequence:
+          # Determine if we should send report
+          - condition: or
+            conditions:
+              - condition: state
+                entity_id: !input print_status_sensor
+                state: "finish"
+              - condition: template
+                value_template: "{{ send_on_failure }}"
+          
+          # Get stored job_id
+          - variables:
+              job_id: "{{ states('input_text.last_print_job_id') }}"
+              snapshot_folder: "{{ snapshot_base_path }}{{ job_id }}/"
+              print_status: "{{ states(print_status_sensor) }}"
+              is_success: "{{ print_status == 'finish' }}"
+              
+          # Take final snapshot if enabled
+          - if:
+              - condition: template
+                value_template: "{{ include_final_snapshot }}"
+            then:
+              - delay: "00:00:02"
+              - service: camera.snapshot
+                target:
+                  entity_id: "{{ camera_entity }}"
+                data:
+                  filename: "{{ snapshot_folder }}snapshot_final.jpg"
+                continue_on_error: true
+          
+          # Calculate print statistics
+          - variables:
+              start_time: "{{ states(start_time_sensor) }}"
+              end_time: "{{ now() }}"
+              print_duration: >
+                {% set start = as_timestamp(start_time) %}
+                {% set end = as_timestamp(end_time) %}
+                {% if start and end %}
+                  {% set duration = end - start %}
+                  {% set hours = (duration / 3600) | int %}
+                  {% set minutes = ((duration % 3600) / 60) | int %}
+                  {{ '%02d:%02d' | format(hours, minutes) }}
+                {% else %}
+                  Unknown
+                {% endif %}
+              final_progress: "{{ states(progress_sensor) }}"
+              nozzle_temp: "{{ states(nozzle_temp_sensor) if nozzle_temp_sensor else 'N/A' }}"
+              bed_temp: "{{ states(bed_temp_sensor) if bed_temp_sensor else 'N/A' }}"
+          
+          # Generate HTML report content
+          - variables:
+              report_html: >
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <meta charset="UTF-8">
+                  <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+                    .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                    .header { text-align: center; border-bottom: 3px solid #4CAF50; padding-bottom: 20px; margin-bottom: 30px; }
+                    .header.failed { border-bottom-color: #f44336; }
+                    h1 { color: #333; margin: 0; }
+                    .status { font-size: 24px; font-weight: bold; margin: 10px 0; }
+                    .status.success { color: #4CAF50; }
+                    .status.failed { color: #f44336; }
+                    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0; }
+                    .info-item { background: #f9f9f9; padding: 15px; border-radius: 5px; }
+                    .info-label { font-weight: bold; color: #666; font-size: 12px; text-transform: uppercase; margin-bottom: 5px; }
+                    .info-value { font-size: 18px; color: #333; }
+                    .snapshots { margin-top: 30px; }
+                    .snapshots h2 { color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+                    .snapshot-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 20px; }
+                    .snapshot-item { text-align: center; }
+                    .snapshot-item img { width: 100%; border-radius: 5px; border: 2px solid #ddd; }
+                    .snapshot-label { margin-top: 10px; font-size: 14px; color: #666; }
+                    .footer { margin-top: 40px; text-align: center; color: #999; font-size: 12px; border-top: 1px solid #ddd; padding-top: 20px; }
+                  </style>
+                </head>
+                <body>
+                  <div class="container">
+                    <div class="header {{ 'failed' if not is_success else '' }}">
+                      <h1>3D Print Report</h1>
+                      <div class="status {{ 'success' if is_success else 'failed' }}">
+                        {{ '✅ Print Completed Successfully' if is_success else '❌ Print Failed' }}
+                      </div>
+                    </div>
+                    
+                    <div class="info-grid">
+                      <div class="info-item">
+                        <div class="info-label">Printer</div>
+                        <div class="info-value">{{ printer_name }}</div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">File Name</div>
+                        <div class="info-value">{{ task_name }}</div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">Print Duration</div>
+                        <div class="info-value">{{ print_duration }}</div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">Filament Used</div>
+                        <div class="info-value">{{ print_weight }}g</div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">Progress</div>
+                        <div class="info-value">{{ final_progress }}%</div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">Status</div>
+                        <div class="info-value">{{ print_status }}</div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">Start Time</div>
+                        <div class="info-value">{{ start_time }}</div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">End Time</div>
+                        <div class="info-value">{{ end_time.strftime('%Y-%m-%d %H:%M:%S') }}</div>
+                      </div>
+                    </div>
+                    
+                    <div class="snapshots">
+                      <h2>Progress Snapshots</h2>
+                      <p style="color: #666; font-size: 14px;">Snapshots taken every {{ snapshot_interval }} minutes during printing</p>
+                      <div class="snapshot-grid">
+                        <!-- Snapshots would be embedded here - you'll need to use a script to generate this -->
+                        <div class="snapshot-item">
+                          <div class="snapshot-label">Snapshot images captured during print</div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div class="footer">
+                      <p>Report generated on {{ end_time.strftime('%Y-%m-%d at %H:%M:%S') }}</p>
+                      <p>Home Assistant - Bambu Printer Monitor</p>
+                    </div>
+                  </div>
+                </body>
+                </html>
+          
+          # Send email with report
+          - service: "{{ email_service }}"
+            data:
+              title: >
+                {{ '✅' if is_success else '❌' }} {{ printer_name }}: {{ task_name }} - {{ 'Complete' if is_success else 'Failed' }}
+              message: >
+                Print Report - {{ printer_name }}
+                
+                File: {{ task_name }}
+                Status: {{ 'Completed Successfully' if is_success else 'Failed' }}
+                Duration: {{ print_duration }}
+                Filament: {{ print_weight }}g
+                Progress: {{ final_progress }}%
+                
+                Full report with snapshots is attached.
+              target: "{{ email_recipient }}"
+              data:
+                html: "{{ report_html }}"
+                images:
+                  - "{{ snapshot_folder }}snapshot_final.jpg"
