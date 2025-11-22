@@ -77,16 +77,54 @@ blueprint:
       selector:
         text:
 
-    critical_start:
-      name: Critical fault start time
-      description: Time from which fault notifications become critical (only for FAULTS).
+    success_notification_type:
+      name: Success notification type
+      description: Notification priority for successful prints.
+      default: "normal"
+      selector:
+        select:
+          options:
+            - label: "Normal (regular notification)"
+              value: "normal"
+            - label: "Critical (bypass Do Not Disturb)"
+              value: "critical"
+
+    success_critical_start:
+      name: Success critical start time
+      description: Time from which success notifications become critical (only if type is Critical).
+      default: "00:00:00"
+      selector:
+        time: {}
+
+    success_critical_end:
+      name: Success critical end time
+      description: Time after which success notifications are no longer critical.
+      default: "23:59:59"
+      selector:
+        time: {}
+
+    fault_notification_type:
+      name: Fault notification type
+      description: Notification priority for failed prints.
+      default: "critical"
+      selector:
+        select:
+          options:
+            - label: "Normal (regular notification)"
+              value: "normal"
+            - label: "Critical (bypass Do Not Disturb)"
+              value: "critical"
+
+    fault_critical_start:
+      name: Fault critical start time
+      description: Time from which fault notifications become critical (only if type is Critical).
       default: "07:00:00"
       selector:
         time: {}
 
-    critical_end:
-      name: Critical fault end time
-      description: Time after which faults are no longer critical (only for FAULTS).
+    fault_critical_end:
+      name: Fault critical end time
+      description: Time after which fault notifications are no longer critical.
       default: "21:00:00"
       selector:
         time: {}
@@ -152,8 +190,12 @@ variables:
   camera_entity: !input camera
   notifications_enabled_boolean: !input notifications_enabled_boolean
   notify_device: !input notify_device
-  critical_start: !input critical_start
-  critical_end: !input critical_end
+  success_notification_type: !input success_notification_type
+  success_critical_start: !input success_critical_start
+  success_critical_end: !input success_critical_end
+  fault_notification_type: !input fault_notification_type
+  fault_critical_start: !input fault_critical_start
+  fault_critical_end: !input fault_critical_end
   critical_sound: !input critical_sound
   critical_volume: !input critical_volume
   cooldown_minutes: !input cooldown_minutes
@@ -254,14 +296,21 @@ action:
       is_fault: >
         {{ is_state(print_status_sensor, 'failed') or 
            is_state(print_error_binary, 'on') }}
-      is_critical_time: >
-        {% if not is_fault %}
-          false
+      is_within_critical_window: >
+        {% set now_time = now().time() %}
+        {% if is_fault %}
+          {% set start = strptime(fault_critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(fault_critical_end, '%H:%M:%S').time() %}
         {% else %}
-          {% set now_time = now().time() %}
-          {% set start = strptime(critical_start, '%H:%M:%S').time() %}
-          {% set end = strptime(critical_end, '%H:%M:%S').time() %}
-          {{ now_time >= start and now_time <= end }}
+          {% set start = strptime(success_critical_start, '%H:%M:%S').time() %}
+          {% set end = strptime(success_critical_end, '%H:%M:%S').time() %}
+        {% endif %}
+        {{ now_time >= start and now_time <= end }}
+      use_critical_alert: >
+        {% if is_fault %}
+          {{ fault_notification_type == 'critical' and is_within_critical_window }}
+        {% else %}
+          {{ success_notification_type == 'critical' and is_within_critical_window }}
         {% endif %}
       notification_title: >
         {% if is_fault %}
@@ -288,7 +337,7 @@ action:
         value_template: "{{ notify_device != '' }}"
     then:
       - choose:
-          # SUCCESS NOTIFICATION - Normal priority
+          # SUCCESS NOTIFICATION
           - conditions:
               - condition: template
                 value_template: "{{ not is_fault }}"
@@ -302,6 +351,10 @@ action:
                     tag: "bambu_print_{{ printer_name }}"
                     sticky: false
                     persistent: false
+                    push: >
+                      {% if use_critical_alert %}
+                      {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
+                      {% endif %}
                     actions: >
                       {% if printers_view_uri != '' %}
                       [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
@@ -309,7 +362,7 @@ action:
                       []
                       {% endif %}
 
-          # FAULT NOTIFICATION - Critical if within time window
+          # FAULT NOTIFICATION
           - conditions:
               - condition: template
                 value_template: "{{ is_fault }}"
@@ -324,7 +377,7 @@ action:
                     sticky: true
                     persistent: true
                     push: >
-                      {% if is_critical_time %}
+                      {% if use_critical_alert %}
                       {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
                       {% endif %}
                     actions: >
