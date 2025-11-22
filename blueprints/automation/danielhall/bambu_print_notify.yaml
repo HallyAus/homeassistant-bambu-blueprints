@@ -131,7 +131,8 @@ blueprint:
       selector:
         text: {}
 
-mode: single
+mode: queued
+max: 3
 
 variables:
   print_status_sensor: !input print_status_sensor
@@ -162,6 +163,14 @@ variables:
   snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
 
 trigger:
+  - platform: homeassistant
+    event: start
+    id: startup
+
+  - platform: event
+    event_type: automation_reloaded
+    id: reload
+
   - platform: numeric_state
     id: progress_threshold
     entity_id: !input progress_sensor
@@ -221,6 +230,13 @@ condition:
          ] }}
 
 action:
+  # Skip if triggered by startup/reload and printer not in completion state
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id in ['startup', 'reload'] and status not in ['finish', 'failed'] }}"
+    then:
+      - stop: "Automation reloaded mid-print, waiting for actual completion"
+
   # Take snapshot with configurable delay
   - delay:
       seconds: "{{ snapshot_delay_seconds | int }}"
