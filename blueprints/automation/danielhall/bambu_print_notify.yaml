@@ -265,17 +265,21 @@ action:
         {% endif %}
       notification_title: >
         {% if is_fault %}
-          {{ printer_name }} FAULT{{ ' (CRITICAL)' if is_critical_time else '' }}
+          {{ printer_name }} FAULT
         {% else %}
-          {{ printer_name }} print finished
+          {{ printer_name }} Print Complete
         {% endif %}
       notification_message: >
         {% if is_fault %}
-          ❌ {{ task_name or 'Print job' }} FAILED on {{ printer_name }}.
-          Status: {{ status }}, progress {{ progress }}%.
+          ❌ Print Failed
+          File: {{ task_name or 'Unknown' }}
+          Progress: {{ progress }}%
+          Status: {{ status }}
         {% else %}
-          ✅ {{ task_name or 'Print job' }} finished on {{ printer_name }}.
-          Weight {{ print_weight }} g, {{ progress }}% reported.
+          ✅ Print Successful
+          File: {{ task_name or 'Unknown' }}
+          Weight: {{ print_weight }}g
+          Progress: {{ progress }}%
         {% endif %}
 
   # Send mobile notification (if device configured)
