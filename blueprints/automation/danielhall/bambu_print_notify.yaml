@@ -275,19 +275,23 @@ action:
       filename: "{{ snapshot_file }}"
     continue_on_error: true
 
-  # Wait for actual finish/fault state (max 10 minutes)
-  - wait_for_trigger:
-      - platform: state
-        entity_id: !input print_status_sensor
-        to:
-          - "finish"
-          - "failed"
-      - platform: state
-        entity_id: !input print_error_binary
-        to: "on"
-    timeout:
-      minutes: 10
-    continue_on_timeout: false
+  # Wait for actual finish/fault state (only if not already complete)
+  - if:
+      - condition: template
+        value_template: "{{ status not in ['finish', 'failed'] and not is_state(print_error_binary, 'on') }}"
+    then:
+      - wait_for_trigger:
+          - platform: state
+            entity_id: !input print_status_sensor
+            to:
+              - "finish"
+              - "failed"
+          - platform: state
+            entity_id: !input print_error_binary
+            to: "on"
+        timeout:
+          minutes: 10
+        continue_on_timeout: false
 
   - delay: "00:00:02"
 
