@@ -342,7 +342,7 @@ blueprint:
           description: >
             Time after which success notifications stop being critical.
             Only applies if notification type is "Critical".
-            Set both start and end to the same time to effectively disable.
+            Set both start and end to the same time for critical ALL DAY.
           default: "00:00:00"
           selector:
             time: {}
@@ -389,7 +389,7 @@ blueprint:
           description: >
             Time after which fault notifications stop being critical.
             Only applies if notification type is "Critical".
-            Set both start and end to the same time to effectively disable.
+            Set both start and end to the same time for critical ALL DAY.
           default: "21:00:00"
           selector:
             time: {}
@@ -784,26 +784,29 @@ action:
            is_state(print_error_binary, 'on') }}
       
       # Determine if we should use critical alert
-      # IMPORTANT: Use {{ }} around the entire expression to output a proper boolean, not a string
+      # Logic:
+      # - If notification_type is not 'critical', always false
+      # - If notification_type is 'critical':
+      #   - If start == end (including 00:00 to 00:00), critical ALL DAY
+      #   - Otherwise, only critical within the time window
       use_critical_alert: >
-        {{
-          (fault_notification_type if is_fault else success_notification_type) == 'critical'
-          and (
-            (strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time() 
-             != strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time())
-            and (
-              (strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time() 
-               < strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time()
-               and now().time() >= strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time()
-               and now().time() <= strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time())
-              or
-              (strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time() 
-               >= strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time()
-               and (now().time() >= strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time()
-                    or now().time() <= strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time()))
-            )
-          )
-        }}
+        {% set notification_type = fault_notification_type if is_fault else success_notification_type %}
+        {% if notification_type != 'critical' %}
+          {{ false }}
+        {% else %}
+          {% set start_str = fault_critical_start if is_fault else success_critical_start %}
+          {% set end_str = fault_critical_end if is_fault else success_critical_end %}
+          {% set start = strptime(start_str, '%H:%M:%S').time() %}
+          {% set end = strptime(end_str, '%H:%M:%S').time() %}
+          {% set now_time = now().time() %}
+          {% if start == end %}
+            {{ true }}
+          {% elif start < end %}
+            {{ now_time >= start and now_time <= end }}
+          {% else %}
+            {{ now_time >= start or now_time <= end }}
+          {% endif %}
+        {% endif %}
       
       notification_title: >
         {% if is_fault %}
@@ -856,7 +859,7 @@ action:
                     sticky: false
                     persistent: false
                     push: >
-                      {% if use_critical_alert == true %}
+                      {% if use_critical_alert %}
                         {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
                       {% else %}
                         {}
@@ -883,7 +886,7 @@ action:
                     sticky: true
                     persistent: true
                     push: >
-                      {% if use_critical_alert == true %}
+                      {% if use_critical_alert %}
                         {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
                       {% else %}
                         {}
