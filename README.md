@@ -1,111 +1,242 @@
-# Bambu Printer Notification Blueprint
+# Bambu Printer Notification Blueprint for Home Assistant
 
-Home Assistant automation blueprint for Bambu Lab printers (e.g. P1S, X1C)
-using the official Bambu integration.
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/YOUR_USERNAME)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.6%2B-blue?style=for-the-badge&logo=home-assistant)](https://www.home-assistant.io/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-This blueprint sends mobile notifications when a print **finishes** or
-**faults**, including a camera snapshot and optional critical alerts for faults.
+A powerful Home Assistant blueprint that sends mobile notifications with camera snapshots when your Bambu printer finishes or encounters a fault. Packed with features for the ultimate 3D printing notification experience.
 
-## Features
+![Notification Example](https://via.placeholder.com/400x200?text=Print+Complete+Notification)
 
-- Finish notification with:
-  - Printer name
-  - Task name / job name
-  - Reported weight
-  - Progress
-  - Camera snapshot
+---
 
-- Fault notification with:
-  - Optional **critical** sound window (e.g. 07:00–21:00)
-  - Snapshot of the print at time of failure
-  - Persistent notification in Home Assistant
+## ✨ Features
 
-- Guards to reduce noise:
-  - Only triggers if progress > 0
-  - Only triggers from meaningful stages (printing / inspecting_first_layer / auto_bed_leveling)
-  - Per-printer `input_boolean` to enable/disable notifications
-  - Cooldown between alerts (default 5 minutes)
+| Feature | Description |
+|---------|-------------|
+| 📸 **Smart Snapshots** | Captures a photo at ~99% progress before the bed drops |
+| 💡 **Snapshot Lighting** | Optionally turn on a light before capture for better photos |
+| 📱 **Mobile Notifications** | Rich notifications with images to iOS/Android |
+| 🔊 **TTS Announcements** | Voice announcements on your smart speakers |
+| 🚨 **Critical Alerts** | Optional critical notifications that bypass Do Not Disturb |
+| ⚡ **Custom Actions** | Run any automation on success or fault |
+| 🌙 **Quiet Hours** | Suppress TTS during sleeping hours |
+| ⏱️ **Cooldown** | Prevent notification spam |
+| 🔔 **Persistent Alerts** | Fault notifications stay until acknowledged |
 
-- Extras:
-  - Uses the Bambu "Force refresh data" button before snapshot
-  - Mobile notification action button to open a printers Lovelace view
-  - Reuses a single notification tag per printer so the latest state replaces the old one
+---
 
-## Installation
+## 📋 Requirements
 
-1. Copy `blueprints/automation/danielhall/bambu_print_notify.yaml` into the
-   same path in your Home Assistant `config` directory, or import it by URL:
+- Home Assistant **2024.6.0** or newer
+- [Bambu Lab integration](https://github.com/greghesp/ha-bambulab) installed and configured
+- A camera entity for your printer
+- (Optional) Mobile app for push notifications
+- (Optional) Media player for TTS announcements
 
-   - Raw URL (example):
+---
 
-     ```
-     https://raw.githubusercontent.com/hallyaus/homeassistant-bambu-blueprints/main/blueprints/automation/danielhall/bambu_print_notify.yaml
-     ```
+## 🚀 Installation
 
-2. In Home Assistant, go to:
+### Method 1: Manual Installation
 
-   **Settings → Automations & Scenes → Blueprints → Import Blueprint**
+1. Download `bambu_printer_notify_v4.yaml`
+2. Copy to your Home Assistant config:
+   ```
+   /config/blueprints/automation/custom/bambu_printer_notify_v4.yaml
+   ```
+3. Restart Home Assistant or reload automations
 
-3. Paste the raw URL and import.
+### Method 2: Import via URL
 
-## Creating an automation from the blueprint
+1. Go to **Settings** → **Automations & Scenes** → **Blueprints**
+2. Click **Import Blueprint**
+3. Paste the raw GitHub URL (if hosted)
+4. Click **Preview** then **Import**
 
-Create a new automation using this blueprint and map:
+---
 
-- **Print status sensor**  
-  `sensor.<printer>_print_status` (values: running, finish, failed, etc.)
+## ⚙️ Configuration
 
-- **Print error binary**  
-  `binary_sensor.<printer>_print_error`
+### Required Inputs
 
-- **Current stage sensor**  
-  `sensor.<printer>_current_stage`
+| Input | Description |
+|-------|-------------|
+| **Print status sensor** | Sensor with states: `running`, `finish`, `failed` |
+| **Print error binary sensor** | Binary sensor that turns ON on error |
+| **Current stage sensor** | Enum sensor for printer stage |
+| **Progress sensor** | Print progress percentage |
+| **Printer name sensor** | Your printer's name |
+| **Task name sensor** | Current print job name |
+| **Print weight sensor** | Print weight in grams |
+| **Camera** | Your printer's camera entity |
+| **Notifications enabled** | input_boolean to enable/disable |
 
-- **Progress sensor**  
-  `sensor.<printer>_print_progress` (%)
+### Snapshot Settings
 
-- **Printer name sensor**  
-  `sensor.<printer>_printer_name`
+| Input | Default | Description |
+|-------|---------|-------------|
+| **Snapshot light** | *none* | Light to turn on before capture |
+| **Light brightness** | 100% | Brightness for snapshot light |
+| **Snapshot delay** | 1 sec | Delay for light warmup / camera adjustment |
 
-- **Task name sensor**  
-  `sensor.<printer>_task_name`
+### TTS Settings
 
-- **Print weight sensor**  
-  `sensor.<printer>_print_weight` (g)
+| Input | Default | Description |
+|-------|---------|-------------|
+| **Enable TTS** | Off | Enable voice announcements |
+| **TTS service** | `tts.speak` | Your TTS service (google, cloud, piper, etc.) |
+| **Media player** | *none* | Speaker(s) for announcements |
+| **Volume** | 0 (current) | Announcement volume (1-100%) |
+| **Success message** | *"{{printer_name}} has finished printing {{task_name}}"* | Customizable template |
+| **Fault message** | *"Warning! {{printer_name}} has encountered a fault..."* | Customizable template |
+| **Quiet hours** | Off | Suppress TTS during specified times |
 
-- **Camera**  
-  `camera.<printer>_camera`
+### Notification Settings
 
-- **Force refresh button**  
-  `button.<printer>_force_refresh_data`
+| Input | Default | Description |
+|-------|---------|-------------|
+| **Notify device** | *empty* | Your `mobile_app_*` service name |
+| **Success type** | Normal | Normal, Critical, or Never Critical |
+| **Fault type** | Critical | Normal, Critical, or Never Critical |
+| **Critical sound** | default | iOS sound name |
+| **Critical volume** | 1.0 | Alert volume (0.0-1.0) |
 
-- **Notifications enabled boolean**  
-  e.g. `input_boolean.<printer>_notifications_enabled`
+### Custom Actions
 
-- **Notify service**  
-  e.g. `notify.mobile_app_your_phone`
+You can run **any** Home Assistant actions on print success or fault:
 
-- **Snapshot file / URL**  
-  - File: `/config/www/snapshots/<printer>_notify.jpg`
-  - URL: `/local/snapshots/<printer>_notify.jpg`
+**Success action examples:**
+- Turn on a green "print done" light
+- Power on a cooling fan via smart plug
+- Send a message to Discord/Slack
+- Turn off the printer after a delay
 
-- **Critical window**  
-  Default: 07:00–21:00 (local time)
+**Fault action examples:**
+- Turn on a red warning light
+- Flash lights to get attention
+- Pause other printers in your farm
+- Send urgent alerts to multiple services
 
-- **Cooldown**  
-  Default: 5 minutes between alerts
+---
 
-- **Printers view URI (optional)**  
-  Example: `/lovelace/3d_printers`
+## 📝 Template Variables
 
-Repeat this blueprint instance per printer (P1S-1, P1S-2, etc.) with the
-correct entities and snapshot paths.
+Use these in your TTS messages:
 
-## Notes
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `{{ printer_name }}` | Printer name | "X1 Carbon" |
+| `{{ task_name }}` | Print job name | "benchy.3mf" |
+| `{{ print_weight }}` | Weight in grams | "15" |
+| `{{ progress }}` | Progress percentage | "100" |
+| `{{ status }}` | Current status | "finish" |
 
-- The snapshot directory `/config/www/snapshots` must exist.
-- `/config/www/...` is exposed by Home Assistant as `/local/...` for the app.
-- Critical alerts require that you grant Critical Alerts permission to the Home
-  Assistant Companion App in your phone’s OS settings.
+---
 
-Contributions and issues are welcome.
+## 💡 Tips & Tricks
+
+### Capture Better Snapshots
+
+1. Set **progress threshold** to 98-99% to capture before the bed drops
+2. Add a **snapshot light** for consistent lighting
+3. Use a **1-2 second delay** to let the camera adjust
+
+### Critical Notifications
+
+- Set time windows to only get critical alerts during certain hours
+- Set **start and end to the same time** to completely disable critical alerts
+- Use "Never Critical" option to always get normal notifications
+
+### Quiet Hours for TTS
+
+Perfect for overnight prints:
+- TTS quiet hours: 22:00 → 07:00
+- You'll still get mobile notifications, just no voice announcements
+
+### Multiple Printers
+
+Create a separate automation from this blueprint for each printer. Use different:
+- Notification tags (automatic based on printer name)
+- Snapshot lights
+- TTS messages
+
+---
+
+## 🐛 Troubleshooting
+
+### "Source not found" when importing
+
+This happens when trying to reimport from a URL. Instead:
+1. Download the YAML file manually
+2. Place it in `/config/blueprints/automation/custom/`
+3. Restart Home Assistant
+
+### Snapshots not saving
+
+1. Ensure `/config/www/snapshots/` directory exists
+2. Check Home Assistant has write permissions
+3. Verify your camera entity is working
+
+### TTS not working
+
+1. Verify your TTS service name is correct
+2. Test your media player with Developer Tools → Services
+3. Check you're not in quiet hours
+
+### Notifications not arriving
+
+1. Verify `notify.mobile_app_*` service exists
+2. Check the notifications enabled boolean is ON
+3. Review cooldown settings
+
+---
+
+## 📜 Changelog
+
+### v4
+- ✨ Added TTS announcements with customizable messages
+- ✨ Added TTS quiet hours
+- ✨ Support for multiple TTS services
+
+### v3
+- ✨ Added custom actions on success/fault
+- 🎨 Organized inputs into collapsible sections
+
+### v2
+- ✨ Added optional snapshot light with brightness control
+- 🐛 Fixed critical notifications (now truly optional)
+- 🐛 Fixed snapshot delay (positive values only)
+- 🐛 Fixed time window handling (00:00-00:00 = disabled)
+
+### v1
+- 🎉 Initial release
+
+---
+
+## 🤝 Contributing
+
+Found a bug? Have a feature request? Feel free to:
+1. Open an issue
+2. Submit a pull request
+3. Share your custom configurations
+
+---
+
+## ☕ Support
+
+If this blueprint has helped you, consider buying me a coffee!
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/printforge)
+
+Your support helps me create more useful Home Assistant blueprints and integrations.
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+Made with ❤️ for the Home Assistant and 3D printing community
