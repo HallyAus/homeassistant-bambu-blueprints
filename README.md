@@ -51,7 +51,7 @@ A powerful Home Assistant blueprint that sends mobile notifications with camera 
 
 1. Go to **Settings** → **Automations & Scenes** → **Blueprints**
 2. Click **Import Blueprint**
-3. Paste the raw GitHub URL (if hosted)
+3. Paste the raw GitHub URL - https://raw.githubusercontent.com/HallyAus/homeassistant-bambu-blueprints/refs/heads/main/blueprints/automation/danielhall/bambu_print_notify.yaml
 4. Click **Preview** then **Import**
 
 ---
