@@ -597,20 +597,19 @@ variables:
   
   # Check if currently in TTS quiet hours
   is_tts_quiet_hours: >
-    {% if not tts_quiet_hours_enable %}
-      false
-    {% else %}
-      {% set start = strptime(tts_quiet_hours_start, '%H:%M:%S').time() %}
-      {% set end = strptime(tts_quiet_hours_end, '%H:%M:%S').time() %}
-      {% set now_time = now().time() %}
-      {% if start == end %}
-        false
-      {% elif start < end %}
-        {{ now_time >= start and now_time < end }}
-      {% else %}
-        {{ now_time >= start or now_time < end }}
-      {% endif %}
-    {% endif %}
+    {{
+      tts_quiet_hours_enable and
+      strptime(tts_quiet_hours_start, '%H:%M:%S').time() != strptime(tts_quiet_hours_end, '%H:%M:%S').time() and
+      (
+        (strptime(tts_quiet_hours_start, '%H:%M:%S').time() < strptime(tts_quiet_hours_end, '%H:%M:%S').time()
+         and now().time() >= strptime(tts_quiet_hours_start, '%H:%M:%S').time()
+         and now().time() < strptime(tts_quiet_hours_end, '%H:%M:%S').time())
+        or
+        (strptime(tts_quiet_hours_start, '%H:%M:%S').time() >= strptime(tts_quiet_hours_end, '%H:%M:%S').time()
+         and (now().time() >= strptime(tts_quiet_hours_start, '%H:%M:%S').time()
+              or now().time() < strptime(tts_quiet_hours_end, '%H:%M:%S').time()))
+      )
+    }}
   
   # Snapshot file paths
   snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
@@ -623,10 +622,25 @@ trigger:
   - platform: event
     event_type: automation_reloaded
     id: reload
+  # Primary trigger: progress crosses threshold
   - platform: numeric_state
     id: progress_threshold
     entity_id: !input progress_sensor
     above: !input progress_trigger_threshold
+  # Backup trigger: print status changes to finish/failed
+  - platform: state
+    id: status_finish
+    entity_id: !input print_status_sensor
+    to: "finish"
+  - platform: state
+    id: status_failed
+    entity_id: !input print_status_sensor
+    to: "failed"
+  # Backup trigger: error binary sensor
+  - platform: state
+    id: error_detected
+    entity_id: !input print_error_binary
+    to: "on"
 
 condition:
   # Check notifications are enabled
@@ -677,6 +691,7 @@ action:
 
   # ════════════════════════════════════════════════════════════════════════════
   # SNAPSHOT WITH OPTIONAL LIGHT
+  # Takes snapshot immediately (at 99% the bed is still up, or on finish/fault)
   # ════════════════════════════════════════════════════════════════════════════
   - if:
       - condition: template
@@ -738,11 +753,11 @@ action:
         continue_on_error: true
 
   # ════════════════════════════════════════════════════════════════════════════
-  # WAIT FOR FINISH/FAULT STATE
+  # WAIT FOR FINISH/FAULT STATE (only if triggered by progress threshold)
   # ════════════════════════════════════════════════════════════════════════════
   - if:
       - condition: template
-        value_template: "{{ status not in ['finish', 'failed'] and not is_state(print_error_binary, 'on') }}"
+        value_template: "{{ trigger.id == 'progress_threshold' }}"
     then:
       - wait_for_trigger:
           - platform: state
@@ -769,24 +784,26 @@ action:
            is_state(print_error_binary, 'on') }}
       
       # Determine if we should use critical alert
+      # IMPORTANT: Use {{ }} around the entire expression to output a proper boolean, not a string
       use_critical_alert: >
-        {% set notification_type = fault_notification_type if is_fault else success_notification_type %}
-        {% if notification_type != 'critical' %}
-          false
-        {% else %}
-          {% set start_str = fault_critical_start if is_fault else success_critical_start %}
-          {% set end_str = fault_critical_end if is_fault else success_critical_end %}
-          {% set start = strptime(start_str, '%H:%M:%S').time() %}
-          {% set end = strptime(end_str, '%H:%M:%S').time() %}
-          {% set now_time = now().time() %}
-          {% if start == end %}
-            false
-          {% elif start < end %}
-            {{ now_time >= start and now_time <= end }}
-          {% else %}
-            {{ now_time >= start or now_time <= end }}
-          {% endif %}
-        {% endif %}
+        {{
+          (fault_notification_type if is_fault else success_notification_type) == 'critical'
+          and (
+            (strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time() 
+             != strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time())
+            and (
+              (strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time() 
+               < strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time()
+               and now().time() >= strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time()
+               and now().time() <= strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time())
+              or
+              (strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time() 
+               >= strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time()
+               and (now().time() >= strptime(fault_critical_start if is_fault else success_critical_start, '%H:%M:%S').time()
+                    or now().time() <= strptime(fault_critical_end if is_fault else success_critical_end, '%H:%M:%S').time()))
+            )
+          )
+        }}
       
       notification_title: >
         {% if is_fault %}
@@ -839,7 +856,7 @@ action:
                     sticky: false
                     persistent: false
                     push: >
-                      {% if use_critical_alert %}
+                      {% if use_critical_alert == true %}
                         {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
                       {% else %}
                         {}
@@ -866,7 +883,7 @@ action:
                     sticky: true
                     persistent: true
                     push: >
-                      {% if use_critical_alert %}
+                      {% if use_critical_alert == true %}
                         {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
                       {% else %}
                         {}
