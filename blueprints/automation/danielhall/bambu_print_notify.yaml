@@ -62,7 +62,8 @@ blueprint:
     
     - Better error handling and validation
   domain: automation
-  min_version: 2024.6.0
+  homeassistant:
+    min_version: 2024.6.0
   input:
     # ══════════════════════════════════════════════════════════════════════════
     # PRINTER SENSORS
