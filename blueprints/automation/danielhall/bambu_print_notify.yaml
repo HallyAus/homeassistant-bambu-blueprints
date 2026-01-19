@@ -1,140 +1,243 @@
 blueprint:
-  name: Bambu printer – finish / fault notify with snapshot (improved)
+  name: Bambu printer – finish / fault notify with snapshot (v2)
   description: >
     Sends a Home Assistant mobile notification with a camera snapshot when a
-    Bambu printer finishes or faults. Includes critical sound window, cooldown,
-    stage/progress guards, persistent notification, and a per-printer
-    enable switch. Improved with consolidated logic and better error handling.
+    Bambu printer finishes or faults.
+    
+    
+    **Features:**
+    
+    - Optional light activation before snapshot capture
+    
+    - Truly optional critical notifications (use "never" to disable completely)
+    
+    - Snapshot delay (positive values delay after trigger, adds time for light warmup)
+    
+    - Critical sound window with proper time handling
+    
+    - Cooldown between alerts
+    
+    - Stage/progress guards
+    
+    - Persistent notification for faults
+    
+    - Per-printer enable switch
+    
+    
+    **v2 Changes:**
+    
+    - Added optional light entity to turn on before snapshot
+    
+    - Fixed critical notifications - now truly optional with "never" option
+    
+    - Added snapshot delay input (positive seconds only)
+    
+    - Improved time window handling (00:00-00:00 now means "never")
+    
+    - Better error handling and validation
   domain: automation
-
   input:
+    # ══════════════════════════════════════════════════════════════════════════
+    # PRINTER SENSORS
+    # ══════════════════════════════════════════════════════════════════════════
     print_status_sensor:
       name: Print status sensor
       description: Sensor with states like running / finish / failed.
       selector:
         entity:
           domain: sensor
-
     print_error_binary:
       name: Print error binary sensor
       description: Binary sensor that goes ON on print error.
       selector:
         entity:
           domain: binary_sensor
-
     current_stage_sensor:
       name: Current stage sensor
       description: Enum sensor for printer stage (printing, inspecting_first_layer, etc.).
       selector:
         entity:
           domain: sensor
-
     progress_sensor:
       name: Progress sensor
       description: Sensor for print progress (%).
       selector:
         entity:
           domain: sensor
-
     printer_name_sensor:
       name: Printer name sensor
       description: Sensor with the printer name (e.g. R2D7).
       selector:
         entity:
           domain: sensor
-
     task_name_sensor:
       name: Task name sensor
       description: Sensor with current task/job name.
       selector:
         entity:
           domain: sensor
-
     print_weight_sensor:
       name: Print weight sensor
       description: Sensor with print weight in grams.
       selector:
         entity:
           domain: sensor
-
     camera:
       name: Printer camera
       selector:
         entity:
           domain: camera
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # SNAPSHOT SETTINGS
+    # ══════════════════════════════════════════════════════════════════════════
+    snapshot_light:
+      name: Snapshot light (optional)
+      description: >
+        Light to turn on before taking the snapshot. Leave empty to skip.
+        The light will be turned on, snapshot taken, then restored to previous state.
+      default: []
+      selector:
+        entity:
+          domain: light
+          multiple: false
+    snapshot_light_brightness:
+      name: Snapshot light brightness (%)
+      description: Brightness level for the snapshot light (1-100%).
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+    snapshot_delay_seconds:
+      name: Snapshot delay (seconds)
+      description: >
+        Seconds to wait before taking snapshot. Use to allow light to warm up
+        or camera to adjust. Must be 0 or positive.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 30
+          unit_of_measurement: seconds
+          mode: slider
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # NOTIFICATION SETTINGS
+    # ══════════════════════════════════════════════════════════════════════════
     notifications_enabled_boolean:
       name: Notifications enabled boolean
       description: input_boolean that must be ON to send notifications.
       selector:
         entity:
           domain: input_boolean
-
     notify_device:
       name: Notify device/service
-      description: "Enter notify service name (e.g., mobile_app_your_phone) or leave empty to disable mobile notifications."
+      description: >
+        Enter notify service name (e.g., mobile_app_your_phone) or leave empty
+        to disable mobile notifications.
       default: ""
       selector:
         text:
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUCCESS NOTIFICATION SETTINGS
+    # ══════════════════════════════════════════════════════════════════════════
     success_notification_type:
       name: Success notification type
-      description: Notification priority for successful prints.
+      description: >
+        Notification priority for successful prints.
+        
+        - **normal**: Standard notification (always)
+        
+        - **critical**: Critical notification during specified time window
+        
+        - **never_critical**: Always use normal notifications (ignores time window)
       default: normal
       selector:
         select:
           options:
-            - normal
-            - critical
-
+            - label: "Normal (standard notifications)"
+              value: "normal"
+            - label: "Critical (during time window)"
+              value: "critical"
+            - label: "Never critical (always normal)"
+              value: "never_critical"
     success_critical_start:
-      name: Success critical start time
-      description: Time from which success notifications become critical (only if type is Critical).
+      name: Success critical window start
+      description: >
+        Time from which success notifications become critical.
+        Only applies if notification type is "Critical".
+      default: "00:00:00"
+      selector:
+        time: {}
+    success_critical_end:
+      name: Success critical window end
+      description: >
+        Time after which success notifications stop being critical.
+        Only applies if notification type is "Critical".
+        Set both start and end to the same time to effectively disable.
       default: "00:00:00"
       selector:
         time: {}
 
-    success_critical_end:
-      name: Success critical end time
-      description: Time after which success notifications are no longer critical.
-      default: "23:59:59"
-      selector:
-        time: {}
-
+    # ══════════════════════════════════════════════════════════════════════════
+    # FAULT NOTIFICATION SETTINGS
+    # ══════════════════════════════════════════════════════════════════════════
     fault_notification_type:
       name: Fault notification type
-      description: Notification priority for failed prints.
+      description: >
+        Notification priority for failed prints.
+        
+        - **normal**: Standard notification (always)
+        
+        - **critical**: Critical notification during specified time window
+        
+        - **never_critical**: Always use normal notifications (ignores time window)
       default: critical
       selector:
         select:
           options:
-            - normal
-            - critical
-
+            - label: "Normal (standard notifications)"
+              value: "normal"
+            - label: "Critical (during time window)"
+              value: "critical"
+            - label: "Never critical (always normal)"
+              value: "never_critical"
     fault_critical_start:
-      name: Fault critical start time
-      description: Time from which fault notifications become critical (only if type is Critical).
+      name: Fault critical window start
+      description: >
+        Time from which fault notifications become critical.
+        Only applies if notification type is "Critical".
       default: "07:00:00"
       selector:
         time: {}
-
     fault_critical_end:
-      name: Fault critical end time
-      description: Time after which fault notifications are no longer critical.
+      name: Fault critical window end
+      description: >
+        Time after which fault notifications stop being critical.
+        Only applies if notification type is "Critical".
+        Set both start and end to the same time to effectively disable.
       default: "21:00:00"
       selector:
         time: {}
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # CRITICAL ALERT SETTINGS
+    # ══════════════════════════════════════════════════════════════════════════
     critical_sound:
       name: Critical alert sound
-      description: Sound name for critical fault alerts (iOS). Common options - default, alert, bell, chime, glass, horn, etc.
+      description: >
+        Sound name for critical alerts (iOS).
+        Common options: default, alert, bell, chime, glass, horn, etc.
       default: "default"
       selector:
         text:
-
     critical_volume:
       name: Critical alert volume
-      description: Volume for critical fault alerts (0.0 to 1.0).
+      description: Volume for critical alerts (0.0 to 1.0).
       default: 1.0
       selector:
         number:
@@ -143,6 +246,9 @@ blueprint:
           step: 0.1
           mode: slider
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # TIMING & THRESHOLDS
+    # ══════════════════════════════════════════════════════════════════════════
     cooldown_minutes:
       name: Cooldown between alerts (minutes)
       description: Minimum time between any alerts from this automation.
@@ -153,10 +259,11 @@ blueprint:
           max: 120
           unit_of_measurement: min
           mode: slider
-
     progress_trigger_threshold:
       name: Progress trigger threshold (%)
-      description: Trigger snapshot at this progress % (recommended 98-99 to capture before bed drops).
+      description: >
+        Trigger snapshot at this progress %.
+        Recommended 98-99 to capture before bed drops.
       default: 99
       selector:
         number:
@@ -165,9 +272,14 @@ blueprint:
           unit_of_measurement: "%"
           mode: slider
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # OPTIONAL FEATURES
+    # ══════════════════════════════════════════════════════════════════════════
     printers_view_uri:
       name: Printers view URI (optional)
-      description: Lovelace path, e.g. /lovelace/3d_printers (leave blank to disable action button).
+      description: >
+        Lovelace path, e.g. /lovelace/3d_printers
+        Leave blank to disable action button.
       default: ""
       selector:
         text: {}
@@ -176,6 +288,7 @@ mode: queued
 max: 3
 
 variables:
+  # Sensor entities
   print_status_sensor: !input print_status_sensor
   print_error_binary: !input print_error_binary
   current_stage_sensor: !input current_stage_sensor
@@ -185,6 +298,13 @@ variables:
   print_weight_sensor: !input print_weight_sensor
   camera_entity: !input camera
   notifications_enabled_boolean: !input notifications_enabled_boolean
+  
+  # Snapshot settings
+  snapshot_light: !input snapshot_light
+  snapshot_light_brightness: !input snapshot_light_brightness
+  snapshot_delay_seconds: !input snapshot_delay_seconds
+  
+  # Notification settings
   notify_device: !input notify_device
   success_notification_type: !input success_notification_type
   success_critical_start: !input success_critical_start
@@ -197,7 +317,8 @@ variables:
   cooldown_minutes: !input cooldown_minutes
   progress_trigger_threshold: !input progress_trigger_threshold
   printers_view_uri: !input printers_view_uri
-
+  
+  # Derived values
   printer_name: "{{ states(printer_name_sensor) }}"
   task_name: "{{ states(task_name_sensor) }}"
   print_weight: "{{ states(print_weight_sensor) }}"
@@ -205,6 +326,11 @@ variables:
   progress: "{{ states(progress_sensor) | int(0) }}"
   current_stage: "{{ states(current_stage_sensor) }}"
   
+  # Check if light is configured (handle both empty string and empty list)
+  has_snapshot_light: >
+    {{ snapshot_light is defined and snapshot_light not in ['', [], none] }}
+  
+  # Snapshot file paths
   snapshot_file: "/config/www/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
   snapshot_url: "/local/snapshots/bambu_{{ printer_name | lower | replace(' ', '_') }}.jpg"
 
@@ -212,28 +338,29 @@ trigger:
   - platform: homeassistant
     event: start
     id: startup
-
   - platform: event
     event_type: automation_reloaded
     id: reload
-
   - platform: numeric_state
     id: progress_threshold
     entity_id: !input progress_sensor
     above: !input progress_trigger_threshold
 
 condition:
+  # Check notifications are enabled
   - condition: state
     entity_id: !input notifications_enabled_boolean
     state: "on"
-
+  
+  # Check sensors are available
   - condition: template
     value_template: >
       {{ not is_state(printer_name_sensor, 'unavailable') and
          not is_state(printer_name_sensor, 'unknown') and
          not is_state(print_status_sensor, 'unavailable') and
          not is_state(print_status_sensor, 'unknown') }}
-
+  
+  # Check cooldown period
   - condition: template
     value_template: >
       {% set last = state_attr('automation.' ~ this.object_id, 'last_triggered') %}
@@ -244,7 +371,8 @@ condition:
         {% set diff = as_timestamp(now()) - last_ts %}
         {{ diff > 60 * (cooldown_minutes | int) }}
       {% endif %}
-
+  
+  # Check print is actually in progress (not just starting)
   - condition: template
     value_template: >
       {{ progress > 0 or 
@@ -256,22 +384,80 @@ condition:
          ] }}
 
 action:
-  # Skip if triggered by startup/reload and printer not in completion state
+  # ════════════════════════════════════════════════════════════════════════════
+  # SKIP ON STARTUP/RELOAD
+  # ════════════════════════════════════════════════════════════════════════════
   - if:
       - condition: template
         value_template: "{{ trigger.id in ['startup', 'reload'] }}"
     then:
       - stop: "Automation reloaded, will trigger at next print completion"
 
-  # Take snapshot immediately (at 99%, bed still up!)
-  - service: camera.snapshot
-    target:
-      entity_id: "{{ camera_entity }}"
-    data:
-      filename: "{{ snapshot_file }}"
-    continue_on_error: true
+  # ════════════════════════════════════════════════════════════════════════════
+  # SNAPSHOT WITH OPTIONAL LIGHT
+  # ════════════════════════════════════════════════════════════════════════════
+  - if:
+      - condition: template
+        value_template: "{{ has_snapshot_light }}"
+    then:
+      # Save current light state
+      - variables:
+          light_was_on: "{{ is_state(snapshot_light, 'on') }}"
+          light_previous_brightness: >
+            {{ state_attr(snapshot_light, 'brightness') | int(255) if is_state(snapshot_light, 'on') else 255 }}
+      
+      # Turn on light at specified brightness
+      - service: light.turn_on
+        target:
+          entity_id: "{{ snapshot_light }}"
+        data:
+          brightness_pct: "{{ snapshot_light_brightness | int }}"
+      
+      # Wait for light to warm up and camera to adjust
+      - delay:
+          seconds: "{{ [snapshot_delay_seconds | int, 0] | max }}"
+      
+      # Take snapshot
+      - service: camera.snapshot
+        target:
+          entity_id: "{{ camera_entity }}"
+        data:
+          filename: "{{ snapshot_file }}"
+        continue_on_error: true
+      
+      # Restore light to previous state
+      - if:
+          - condition: template
+            value_template: "{{ not light_was_on }}"
+        then:
+          - service: light.turn_off
+            target:
+              entity_id: "{{ snapshot_light }}"
+        else:
+          - service: light.turn_on
+            target:
+              entity_id: "{{ snapshot_light }}"
+            data:
+              brightness: "{{ light_previous_brightness }}"
+    else:
+      # No light configured - just delay (if any) and take snapshot
+      - if:
+          - condition: template
+            value_template: "{{ (snapshot_delay_seconds | int) > 0 }}"
+        then:
+          - delay:
+              seconds: "{{ snapshot_delay_seconds | int }}"
+      
+      - service: camera.snapshot
+        target:
+          entity_id: "{{ camera_entity }}"
+        data:
+          filename: "{{ snapshot_file }}"
+        continue_on_error: true
 
-  # Wait for actual finish/fault state (only if not already complete)
+  # ════════════════════════════════════════════════════════════════════════════
+  # WAIT FOR FINISH/FAULT STATE
+  # ════════════════════════════════════════════════════════════════════════════
   - if:
       - condition: template
         value_template: "{{ status not in ['finish', 'failed'] and not is_state(print_error_binary, 'on') }}"
@@ -288,36 +474,52 @@ action:
         timeout:
           minutes: 10
         continue_on_timeout: false
-
+  
+  # Small delay for state to settle
   - delay: "00:00:02"
 
-  # Calculate notification properties
+  # ════════════════════════════════════════════════════════════════════════════
+  # CALCULATE NOTIFICATION PROPERTIES
+  # ════════════════════════════════════════════════════════════════════════════
   - variables:
       is_fault: >
         {{ is_state(print_status_sensor, 'failed') or 
            is_state(print_error_binary, 'on') }}
-      is_within_critical_window: >
-        {% set now_time = now().time() %}
-        {% if is_fault %}
-          {% set start = strptime(fault_critical_start, '%H:%M:%S').time() %}
-          {% set end = strptime(fault_critical_end, '%H:%M:%S').time() %}
-        {% else %}
-          {% set start = strptime(success_critical_start, '%H:%M:%S').time() %}
-          {% set end = strptime(success_critical_end, '%H:%M:%S').time() %}
-        {% endif %}
-        {{ now_time >= start and now_time <= end }}
+      
+      # Determine if we should use critical alert
+      # Logic: 
+      # - "normal" or "never_critical" = never critical
+      # - "critical" = critical only within time window
+      # - If start == end, window is disabled (never critical)
       use_critical_alert: >
-        {% if is_fault %}
-          {{ fault_notification_type == 'critical' and is_within_critical_window }}
+        {% set notification_type = fault_notification_type if is_fault else success_notification_type %}
+        {% if notification_type != 'critical' %}
+          false
         {% else %}
-          {{ success_notification_type == 'critical' and is_within_critical_window }}
+          {% set start_str = fault_critical_start if is_fault else success_critical_start %}
+          {% set end_str = fault_critical_end if is_fault else success_critical_end %}
+          {% set start = strptime(start_str, '%H:%M:%S').time() %}
+          {% set end = strptime(end_str, '%H:%M:%S').time() %}
+          {% set now_time = now().time() %}
+          {% if start == end %}
+            {# Same start and end time means disabled #}
+            false
+          {% elif start < end %}
+            {# Normal window (e.g., 07:00 to 21:00) #}
+            {{ now_time >= start and now_time <= end }}
+          {% else %}
+            {# Overnight window (e.g., 21:00 to 07:00) #}
+            {{ now_time >= start or now_time <= end }}
+          {% endif %}
         {% endif %}
+      
       notification_title: >
         {% if is_fault %}
           {{ printer_name }} FAULT
         {% else %}
           {{ printer_name }} Print Complete
         {% endif %}
+      
       notification_message: >
         {% if is_fault %}
           ❌ Print Failed
@@ -331,7 +533,9 @@ action:
           Progress: {{ progress }}%
         {% endif %}
 
-  # Send mobile notification (if device configured)
+  # ════════════════════════════════════════════════════════════════════════════
+  # SEND MOBILE NOTIFICATION
+  # ════════════════════════════════════════════════════════════════════════════
   - if:
       - condition: template
         value_template: "{{ notify_device != '' }}"
@@ -353,15 +557,17 @@ action:
                     persistent: false
                     push: >
                       {% if use_critical_alert %}
-                      {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
+                        {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
+                      {% else %}
+                        {}
                       {% endif %}
                     actions: >
                       {% if printers_view_uri != '' %}
-                      [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+                        [{"action": "URI", "title": "Open Printers", "uri": "{{ printers_view_uri }}"}]
                       {% else %}
-                      []
+                        []
                       {% endif %}
-
+          
           # FAULT NOTIFICATION
           - conditions:
               - condition: template
@@ -378,23 +584,27 @@ action:
                     persistent: true
                     push: >
                       {% if use_critical_alert %}
-                      {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
+                        {{ {'sound': {'name': critical_sound, 'critical': 1, 'volume': critical_volume}} }}
+                      {% else %}
+                        {}
                       {% endif %}
                     actions: >
                       {% if printers_view_uri != '' %}
-                      [{"action": "OPEN_PRINTER_VIEW", "title": "Open printers view", "uri": "{{ printers_view_uri }}"}]
+                        [{"action": "URI", "title": "Open Printers", "uri": "{{ printers_view_uri }}"}]
                       {% else %}
-                      []
+                        []
                       {% endif %}
 
-  # Create persistent notification for faults only
+  # ════════════════════════════════════════════════════════════════════════════
+  # PERSISTENT NOTIFICATION FOR FAULTS
+  # ════════════════════════════════════════════════════════════════════════════
   - if:
       - condition: template
         value_template: "{{ is_fault }}"
     then:
       - service: persistent_notification.create
         data:
-          title: "{{ printer_name }} fault"
+          title: "{{ printer_name }} Fault"
           message: >
             {{ task_name or 'Print job' }} on {{ printer_name }} has a fault.
             Status: {{ status }}, progress {{ progress }}%.
