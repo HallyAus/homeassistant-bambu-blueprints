@@ -222,6 +222,11 @@ Found a bug? Have a feature request? Feel free to:
 3. Share your custom configurations
 
 ---
+## Contributors
+
+- [@sawokei](https://github.com/sawokei) - Bug reports and testing
+
+---
 
 ## ☕ Support
 
