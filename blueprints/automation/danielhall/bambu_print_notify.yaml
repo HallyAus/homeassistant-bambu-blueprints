@@ -627,19 +627,26 @@ trigger:
     id: progress_threshold
     entity_id: !input progress_sensor
     above: !input progress_trigger_threshold
-  # Backup trigger: print status changes to finish/failed
+  # Backup trigger: print status changes to finish (only from running state)
   - platform: state
     id: status_finish
     entity_id: !input print_status_sensor
+    from: "running"
     to: "finish"
+  # Backup trigger: print status changes to failed (only from active states)
   - platform: state
     id: status_failed
     entity_id: !input print_status_sensor
+    from:
+      - "running"
+      - "prepare"
+      - "pause"
     to: "failed"
-  # Backup trigger: error binary sensor
+  # Backup trigger: error binary sensor (only from off state)
   - platform: state
     id: error_detected
     entity_id: !input print_error_binary
+    from: "off"
     to: "on"
 
 condition:
@@ -671,13 +678,23 @@ condition:
   # Check print is actually in progress (not just starting)
   - condition: template
     value_template: >
-      {{ progress > 0 or 
+      {{ progress > 0 or
          current_stage in [
            'printing',
            'inspecting_first_layer',
            'auto_bed_leveling',
            'paused'
          ] }}
+
+  # Guard against spurious triggers when printer comes back online
+  # If triggered by state change, ensure previous state wasn't offline/unavailable
+  - condition: template
+    value_template: >
+      {% if trigger.from_state is defined and trigger.from_state.state is defined %}
+        {{ trigger.from_state.state not in ['offline', 'unavailable', 'unknown'] }}
+      {% else %}
+        {{ true }}
+      {% endif %}
 
 action:
   # ════════════════════════════════════════════════════════════════════════════
