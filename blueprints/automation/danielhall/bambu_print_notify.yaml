@@ -1,67 +1,85 @@
 blueprint:
-  name: Bambu printer – finish / fault notify with snapshot (v4)
+  name: Bambu printer – finish / fault notify with snapshot (v4.1)
   description: >
     Sends a Home Assistant mobile notification with a camera snapshot when a
     Bambu printer finishes or faults.
-    
-    
+
+
     **Features:**
-    
+
     - Optional light activation before snapshot capture
-    
+
     - Text-to-speech announcements on completion/fault
-    
+
     - Custom actions on print completion (turn on lights, switches, run scripts, etc.)
-    
+
     - Custom actions on print fault
-    
+
     - Truly optional critical notifications (use "never" to disable completely)
-    
+
     - Snapshot delay for light warmup / camera adjustment
-    
+
     - Critical sound window with proper time handling
-    
+
     - Cooldown between alerts
-    
+
     - Stage/progress guards
-    
+
     - Persistent notification for faults
-    
+
     - Per-printer enable switch
-    
-    
+
+
+    ---
+
+    If you find this useful, [buy me a coffee!](https://buymeacoffee.com/hallyaus)
+
+
+    ---
+
+
+    **v4.1 Changes:**
+
+    - Fixed spurious notifications when printer reconnects from offline state
+
+    - Added 'from' constraints on state triggers to prevent false notifications
+
+    - Added guard condition to reject triggers from offline/unavailable states
+
+
     **v4 Changes:**
-    
+
     - Added TTS (text-to-speech) announcements for success and fault events
-    
+
     - Configurable TTS messages with template support
-    
+
     - Optional quiet hours to suppress TTS announcements
-    
+
     - Support for any media_player or tts service
-    
-    
+
+
     **v3 Changes:**
-    
+
     - Added custom actions on success (e.g., turn on celebration light, activate switch)
-    
+
     - Added custom actions on fault (e.g., turn on warning light, pause other printers)
-    
+
     - Actions are fully customizable - use any Home Assistant action
-    
-    
+
+
     **v2 Changes:**
-    
+
     - Added optional light entity to turn on before snapshot
-    
+
     - Fixed critical notifications - now truly optional with "never" option
-    
+
     - Added snapshot delay input (positive seconds only)
-    
+
     - Improved time window handling (00:00-00:00 now means "never")
-    
+
     - Better error handling and validation
   domain: automation
+  source_url: https://github.com/HallyAus/homeassistant-bambu-blueprints
   homeassistant:
     min_version: 2024.6.0
   input:
