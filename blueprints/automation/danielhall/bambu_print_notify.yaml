@@ -793,6 +793,13 @@ action:
   - if:
       - condition: template
         value_template: "{{ trigger.id == 'progress_threshold' }}"
+  - condition: not
+    conditions:
+      - condition: state
+        entity_id: !input print_status_sensor
+        state:
+          - finish
+          - failed
     then:
       - wait_for_trigger:
           - platform: state
