@@ -1,0 +1,66 @@
+name: Temporary PR 11 patch
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  patch:
+    if: github.actor == 'HallyAus' && github.event.issue.number == 11 && contains(github.event.comment.body, '/apply-bambu-issue7-fix')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check out PR branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="$(gh pr view 11 --repo HallyAus/homeassistant-bambu-blueprints --json headRefName -q .headRefName)"
+          git fetch origin "$branch"
+          git checkout -B "$branch" "origin/$branch"
+      - name: Apply validated race fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          paths = [Path('bambu_print_notify.yaml'), Path('blueprints/automation/danielhall/bambu_print_notify.yaml')]
+          old = '''  - if:\n      - condition: template\n        value_template: "{{ trigger.id == 'progress_threshold' }}"\n    then:\n      - wait_for_trigger:\n'''
+          new = '''  - if:\n      - condition: template\n        value_template: "{{ trigger.id == 'progress_threshold' }}"\n      - condition: state\n        entity_id: !input print_status_sensor\n        state: "running"\n    then:\n      - wait_for_trigger:\n'''
+          for path in paths:
+              text = path.read_text()
+              if new not in text:
+                  if old not in text:
+                      raise SystemExit(f'expected block missing in {path}')
+                  path.write_text(text.replace(old, new, 1))
+          if paths[0].read_bytes() != paths[1].read_bytes():
+              raise SystemExit('blueprint copies are not identical')
+          plan = Path('ISSUE7_FIX_PLAN.md')
+          if plan.exists():
+              plan.unlink()
+          # Remove the branch-only workflow if present.
+          branch_workflow = Path('.github/workflows/issue7-fix.yml')
+          if branch_workflow.exists():
+              branch_workflow.unlink()
+          PY
+      - name: Validate and push
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in [Path('bambu_print_notify.yaml'), Path('blueprints/automation/danielhall/bambu_print_notify.yaml')]:
+              # PyYAML does not know HA's !input tag, so validate structural text invariants here.
+              text = path.read_text()
+              assert 'state: "running"' in text
+              assert text.count('trigger.id == \'progress_threshold\'') >= 1
+              assert '\t' not in text
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: avoid missed finish transition notification delay"
+          git push origin HEAD:fix/notification-delay-issue-7
