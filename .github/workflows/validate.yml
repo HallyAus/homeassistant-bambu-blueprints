@@ -1,0 +1,32 @@
+name: Validate blueprint
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.12'
+            ha: '2024.6.0'
+          - python: '3.14'
+            ha: '2026.9.3'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+      - if: matrix.ha == '2024.6.0'
+        run: python -m pip install -r requirements-test.txt
+      - if: matrix.ha != '2024.6.0'
+        run: python -m pip install 'homeassistant==${{ matrix.ha }}' 'pytest>=8,<10' 'pytest-asyncio>=0.24,<2'
+      - run: python -m pytest -q
