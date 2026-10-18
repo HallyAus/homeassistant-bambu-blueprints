@@ -1,0 +1,70 @@
+name: Personal Bambu blueprint validation
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: personal-ubuntu
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.12'
+            ha: '2024.6.0'
+            image: python:3.12-bookworm@sha256:5560e9ab8709f459489e5b8aa696eda8a07ef821e14bb122be62d91234bfa98b
+          - python: '3.14'
+            ha: '2026.9.3'
+            image: python:3.14-bookworm@sha256:7ee7e4d4fb42c3ad45b8fdc473b64ec69c3cf6e80ae5d52f6fa55f77fac29027
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Check out exact private VM300 source
+        env:
+          SOURCE_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SERVER_URL" = 'http://192.168.1.130:3000'
+          test "$GITHUB_REPOSITORY" = 'hallyaus/homeassistant-bambu-blueprints'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test -n "${SOURCE_TOKEN:?Repository-scoped source token required}"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          helper="$(mktemp "${RUNNER_TEMP:-/tmp}/bambu-askpass.XXXXXX")"
+          trap 'rm -f "$helper"' EXIT
+          cat > "$helper" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$SOURCE_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$helper"
+          export GIT_ASKPASS="$helper" GIT_TERMINAL_PROMPT=0
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git -c credential.helper= fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Original real automation-engine tests with synthetic entities
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python }}
+          HOME_ASSISTANT_VERSION: ${{ matrix.ha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset SOURCE_TOKEN GITEA_TOKEN GITHUB_TOKEN
+          python -c 'import os,sys; assert ".".join(map(str,sys.version_info[:2])) == os.environ["EXPECTED_PYTHON"]'
+          if test "$HOME_ASSISTANT_VERSION" = '2024.6.0'; then
+            python -m pip install --disable-pip-version-check -r requirements-test.txt
+          elif test "$HOME_ASSISTANT_VERSION" = '2026.9.3'; then
+            python -m pip install --disable-pip-version-check 'homeassistant==2026.9.3' 'pytest>=8,<10' 'pytest-asyncio>=0.24,<2'
+          else
+            echo 'Unexpected Home Assistant test version'; exit 1
+          fi
+          python -m pytest -q
+          cmp bambu_print_notify.yaml blueprints/automation/danielhall/bambu_print_notify.yaml
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code --
