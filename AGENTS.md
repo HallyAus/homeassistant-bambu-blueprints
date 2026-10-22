@@ -1,17 +1,9 @@
+## GitHub source control and self-hosted runner (current policy, 2026-10-22)
+
+- **Canonical repository:** `https://github.com/HallyAus/homeassistant-bambu-blueprints`. GitHub is the source of truth. Commit, push, open pull requests and publish tags/releases to GitHub; do not publish to former Git servers or maintain a secondary recovery mirror.
+- **Branch and remote:** Use the repository's current GitHub default/production branch, verify `git remote -v` before pushing, preserve uncommitted work and never force-push over newer commits.
+- **CI/CD:** A self-hosted GitHub Actions runner is available. Prefer it for eligible jobs when the repository has a configured workflow; use the exact runner labels verified in repository settings or existing workflows. Do not assume the runner's OS, permissions, online status or available secrets, and do not expose credentials to untrusted contributions.
+- **Validation and deployment:** Keep the project's existing tests, security checks, branch protections, release approvals, staging/acceptance and production verification. A GitHub push or green build is not proof of production deployment. Do not silently enable or bypass deployment triggers, and never infer that Vercel, Proxmox or another target deploys automatically.
+- **Precedence:** This section overrides older hosting, mirror, disabled-Actions and publishing instructions elsewhere in this file. Preserve non-hosting project-specific safety rules.
+
 # Personal source and validation
-
-Use private VM300 `hallyaus/homeassistant-bambu-blueprints` as origin, Git SSH2222.
-Push completed, validated source there first and then the identical GitHub
-recovery commit. Keep GitHub Actions disabled and preserve existing public
-blueprint import URLs until a replacement has been verified for installed users.
-
-Gitea validation retains both original real Home Assistant test environments:
-Python3.12/HA2024.6.0 and Python3.14/HA2026.9.3. Use only the personal runner.
-Tests use synthetic entities and mocked services; never send real notifications,
-capture a real camera, call a printer or reload/restart Home Assistant as a test.
-Both distributed blueprint YAML copies must remain byte-identical.
-
-Do not revive the historical PR11 comment-triggered patch workflow. It writes
-branches and is unrelated to current validation. Preserve its history with
-GitHub Actions disabled. A private candidate artifact is not an installed release.
-Keep M4T, Kidde and Proxmox.99 outside this work.
