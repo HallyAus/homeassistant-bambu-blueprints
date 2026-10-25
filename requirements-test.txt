@@ -1,5 +1,5 @@
 # Keep the minimum supported Home Assistant version executable in CI.
-homeassistant==2024.6.0
+homeassistant==2026.10.2
 josepy<2
 pytest>=8,<10
 pytest-asyncio>=0.24,<2
