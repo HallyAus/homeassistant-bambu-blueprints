@@ -13,7 +13,7 @@ jobs:
     if: github.actor == 'HallyAus' && github.event.issue.number == 11 && contains(github.event.comment.body, '/apply-bambu-issue7-fix')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check out PR branch
