@@ -1,5 +1,10 @@
-# Keep the minimum supported Home Assistant version executable in CI.
-homeassistant==2024.6.0
-josepy<2
+# Shared test tools for every CI cell.
+# Home Assistant core is installed from the workflow matrix
+# (homeassistant==${{ matrix.ha }}), not from this file, so a pin here
+# cannot select a different core than the cell under test.
+# The Python 3.12 / 2024.6.0 cell also installs josepy<2. That ceiling
+# conflicts with Home Assistant 2026.11.0 (josepy>=2) and stays on that cell.
+# Local minimum-version check:
+#   python -m pip install -r requirements-test.txt 'homeassistant==2024.6.0' 'josepy<2'
 pytest>=8,<10
 pytest-asyncio>=0.24,<2

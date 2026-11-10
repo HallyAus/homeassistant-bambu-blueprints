@@ -6,6 +6,6 @@ GitHub `https://github.com/HallyAus/homeassistant-bambu-blueprints` is authorita
 
 GitHub is the primary source. Preserve existing public blueprint import URLs until any replacement is verified for installed users.
 
-GitHub Actions validation must retain the two real Home Assistant test environments: Python3.12/HA2024.6.0 and Python3.14/HA2026.9.3. Use the configured personal self-hosted runner. Tests use synthetic entities and mocked services; never send real notifications, capture a real camera, call a printer or reload/restart Home Assistant as a test. Both distributed blueprint YAML copies must remain byte-identical.
+GitHub Actions validation must retain the two real Home Assistant test environments: Python3.12/HA2024.6.0 and Python3.14/HA2026.11.0. Each cell installs homeassistant==${{ matrix.ha }} so requirements-test.txt cannot select a different core. Use the configured personal self-hosted runner. Tests use synthetic entities and mocked services; never send real notifications, capture a real camera, call a printer or reload/restart Home Assistant as a test. Both distributed blueprint YAML copies must remain byte-identical.
 
 Do not revive the historical PR11 comment-triggered patch workflow. It writes branches and is unrelated to current validation. A private candidate artifact is not an installed release. Keep M4T, Kidde and Proxmox.99 outside this work.
