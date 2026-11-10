@@ -249,14 +249,15 @@ reported in the automation trace; other delivery branches still run.
 Use Python 3.12 for the minimum-supported-version test suite:
 
 ```sh
-python -m pip install -r requirements-test.txt
+python -m pip install -r requirements-test.txt 'homeassistant==2024.6.0' 'josepy<2'
 python -m pytest -q
 ```
 
 Tests import the blueprint and execute real Home Assistant automation triggers,
 conditions, templates and actions using synthetic entities and service handlers.
 They do not contact a printer or send real notifications. CI also checks that
-both import paths contain identical YAML, on Home Assistant 2024.6.0 and 2026.9.3.
+both import paths contain identical YAML, on Home Assistant 2024.6.0 (Python 3.12)
+and 2026.11.0 (Python 3.14, which satisfies that core's Python >=3.14.2 requirement).
 
 ---
 
