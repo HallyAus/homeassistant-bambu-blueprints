@@ -6,5 +6,5 @@
 # conflicts with Home Assistant 2026.11.0 (josepy>=2) and stays on that cell.
 # Local minimum-version check:
 #   python -m pip install -r requirements-test.txt 'homeassistant==2024.6.0' 'josepy<2'
-pytest>=8,<10
+pytest>=9.2.0,<10
 pytest-asyncio>=0.24,<2
