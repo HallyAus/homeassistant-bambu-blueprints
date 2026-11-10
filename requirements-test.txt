@@ -7,4 +7,4 @@
 # Local minimum-version check:
 #   python -m pip install -r requirements-test.txt 'homeassistant==2024.6.0' 'josepy<2'
 pytest>=8,<10
-pytest-asyncio>=0.24,<2
+pytest-asyncio>=1.4.1.post1,<2
